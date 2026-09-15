@@ -62,7 +62,7 @@ describe("Oturum katmanı (F-01/F-06)", () => {
   };
 
   it("imzalı token üretir ve doğrular", async () => {
-    const token = await createSessionToken(user);
+    const token = await createSessionToken(user, "test-auth-version");
     expect(token).toBeTruthy();
     const back = await verifySessionToken(token!);
     expect(back?.id).toBe(7);
@@ -71,7 +71,7 @@ describe("Oturum katmanı (F-01/F-06)", () => {
   });
 
   it("kurcalanmış token reddedilir (imza doğrulaması)", async () => {
-    const token = (await createSessionToken(user))!;
+    const token = (await createSessionToken(user, "test-auth-version"))!;
     const parts = token.split(".");
     // payload'ı kurcala: rolü ADMIN yap
     const forgedPayload = Buffer.from(
@@ -82,7 +82,7 @@ describe("Oturum katmanı (F-01/F-06)", () => {
   });
 
   it("yanlış secret ile imzalanmış token reddedilir", async () => {
-    const token = (await createSessionToken(user))!;
+    const token = (await createSessionToken(user, "test-auth-version"))!;
     process.env.SESSION_SECRET = "baska-secret-key-must-be-at-least-32-chars!!";
     expect(await verifySessionToken(token)).toBeNull();
   });
@@ -93,7 +93,7 @@ describe("Oturum katmanı (F-01/F-06)", () => {
   });
 
   it("bilinmeyen rol içeren token reddedilir", async () => {
-    const token = await createSessionToken({ ...user, role: "SUPERADMIN" as any });
+    const token = await createSessionToken({ ...user, role: "SUPERADMIN" as any }, "test-auth-version");
     expect(await verifySessionToken(token!)).toBeNull();
   });
 });

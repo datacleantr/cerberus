@@ -28,7 +28,13 @@ export async function POST(req: Request) {
     const recent = await db
       .select()
       .from(scrapeJobs)
-      .where(and(eq(scrapeJobs.sourceUrl, url), gte(scrapeJobs.createdAt, sixHoursAgo)))
+      .where(
+        and(
+          eq(scrapeJobs.sourceUrl, url),
+          eq(scrapeJobs.storeCode, storeCode),
+          gte(scrapeJobs.createdAt, sixHoursAgo)
+        )
+      )
       .orderBy(desc(scrapeJobs.createdAt))
       .limit(1);
 
@@ -46,6 +52,26 @@ export async function POST(req: Request) {
       });
     }
 
+    // DB tabanlı sayaç serverless instance'lar arasında da çalışır. Cache hit'leri
+    // outbound istek üretmediği için limite dahil edilmez.
+    const oneMinuteAgo = new Date(Date.now() - 60_000);
+    const recentAttempts = await db
+      .select({ id: scrapeJobs.id })
+      .from(scrapeJobs)
+      .where(
+        and(
+          eq(scrapeJobs.createdBy, user.email),
+          gte(scrapeJobs.createdAt, oneMinuteAgo)
+        )
+      )
+      .limit(5);
+    if (recentAttempts.length >= 5) {
+      return NextResponse.json(
+        { error: "Crawler hız sınırı aşıldı. Bir dakika sonra tekrar deneyin." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      );
+    }
+
     // Yeni iş kaydı
     const normalizedDomain = (() => {
       try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "unknown"; }
@@ -56,7 +82,8 @@ export async function POST(req: Request) {
       sourceDomain: normalizedDomain,
       storeCode,
       status: "PENDING",
-      createdBy: user.name,
+      // E-posta oturumun benzersiz kimliğidir; görünen adlar çakışabilir.
+      createdBy: user.email,
     }).returning();
 
     try {
@@ -111,9 +138,13 @@ export async function POST(req: Request) {
         isListingPage: result.isListingPage,
       });
     } catch (scrapeErr: unknown) {
+      const typedError = scrapeErr as Error & { status?: number };
       const msg = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
       await db.update(scrapeJobs).set({ status: "FAILED", error: msg.slice(0, 1000), completedAt: new Date() }).where(eq(scrapeJobs.id, job.id));
-      return NextResponse.json({ error: msg, jobId: job.id }, { status: msg.includes("taranamadı") || msg.includes("çıkarılamadı") ? 422 : 502 });
+      const status =
+        typedError.status ??
+        (msg.includes("taranamadı") || msg.includes("çıkarılamadı") ? 422 : 502);
+      return NextResponse.json({ error: msg, jobId: job.id }, { status });
     }
   } catch (error: unknown) {
     return handleRouteError("POST /api/crawler/scrape", error);

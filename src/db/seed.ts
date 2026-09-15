@@ -68,7 +68,7 @@ export async function ensureCerberusSeeded() {
         buyerName: s.buyerName,
         currency: s.currency,
         status: s.status,
-        defaultCard: "1753",
+        defaultCard: null,
         defaultEmail: `${s.storeCode.toLowerCase()}@cerberus-commerce.io`,
         notes: `${s.storeName} ana operasyon mağazası`,
         totalOrdersCount: s.totalOrdersCount,

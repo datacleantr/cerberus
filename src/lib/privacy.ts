@@ -8,6 +8,7 @@ import type { SessionUser } from "@/lib/session";
  */
 
 export function maskCreditCard(last4: string | null | undefined): string {
+  if (!last4) return "";
   // Tamamı maskeli — son 4 hane dahi kişisel/işlem verisi sayılır
   return "••••";
 }

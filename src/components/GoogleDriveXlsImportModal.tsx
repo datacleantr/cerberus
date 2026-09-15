@@ -96,7 +96,7 @@ export function GoogleDriveXlsImportModal({
         problemAction: String(cols[25] || "").trim(),
         problemResult: String(cols[26] || "").trim(),
         refundAmount: String(cols[27] || "0").replace(",", "."),
-        creditCard: String(cols[28] || "1753").trim(),
+        creditCard: String(cols[28] || "").trim(),
         isFragile: String(cols[29] || "NO").trim(),
         isMultiPack: String(cols[30] || "NO").trim(),
         isBundle: String(cols[31] || "NO").trim(),

@@ -1,7 +1,7 @@
 "use client";
 
 import { clientLog } from "@/lib/clientLogger";
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useDeferredValue, useState, useEffect } from "react";
 import {
   Store,
   Users,
@@ -26,10 +26,11 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { ThresholdSettings } from "@/features/settings/ThresholdSettings";
+import type { SessionUser } from "@/lib/session";
 
 interface AdminDashboardProps {
   onStoreSelected?: (storeCode: string) => void;
-  currentUser: any;
+  currentUser: SessionUser;
   onDataRefresh?: () => void;
 }
 
@@ -51,6 +52,11 @@ export function AdminDashboard({
   // Filter for orders subtab
   const [orderStoreFilter, setOrderStoreFilter] = useState("ALL");
   const [orderSearchQuery, setOrderSearchQuery] = useState("");
+  const deferredOrderSearch = useDeferredValue(orderSearchQuery);
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderPageCount, setOrderPageCount] = useState(1);
+  const [orderTotal, setOrderTotal] = useState(0);
+  const [ordersLoading, setOrdersLoading] = useState(false);
 
   // New Store Modal state
   const [isNewStoreModalOpen, setIsNewStoreModalOpen] = useState(false);
@@ -58,7 +64,7 @@ export function AdminDashboard({
   const [storeName, setStoreName] = useState("");
   const [marketplace, setMarketplace] = useState("AMAZON");
   const [buyerName, setBuyerName] = useState("");
-  const [defaultCard, setDefaultCard] = useState("1753");
+  const [defaultCard, setDefaultCard] = useState("");
   const [defaultEmail, setDefaultEmail] = useState("");
   const [storeNotes, setStoreNotes] = useState("");
   const [savingStore, setSavingStore] = useState(false);
@@ -87,41 +93,67 @@ export function AdminDashboard({
     setTimeout(() => setFeedbackMsg(null), 4500);
   };
 
-  const fetchAdminData = async () => {
+  const fetchAdminData = useCallback(async () => {
     try {
-      const [storesRes, usersRes, logsRes] = await Promise.all([
+      const [storesRes, usersRes] = await Promise.all([
         fetch("/api/admin/stores"),
-        fetch("/api/admin/users"),
-        fetch("/api/orders?storeCode=ALL"),
+        currentUser.role === "ADMIN" ? fetch("/api/admin/users") : Promise.resolve(null),
       ]);
 
       if (storesRes.ok) {
         const data = await storesRes.json();
         setStores(data.stores || []);
       }
-      if (usersRes.ok) {
+      if (usersRes?.ok) {
         const data = await usersRes.json();
         setUsers(data.users || []);
-      }
-      if (logsRes.ok) {
-        const data = await logsRes.json();
-        setAuditLogs(data.auditLogs || []);
-        setOrders(data.orders || []);
       }
     } catch (err) {
       clientLog.error("admin/fetch", "Admin verisi alınamadı", { err: String(err) });
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentUser.role]);
+
+  const fetchOrderPage = useCallback(async () => {
+    setOrdersLoading(true);
+    try {
+      const params = new URLSearchParams({
+        storeCode: orderStoreFilter,
+        page: String(orderPage),
+        pageSize: "50",
+      });
+      if (deferredOrderSearch.trim()) params.set("search", deferredOrderSearch.trim());
+
+      const response = await fetch(`/api/orders?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Sipariş sayfası yüklenemedi.");
+      }
+      setOrders(data.orders || []);
+      setAuditLogs(data.auditLogs || []);
+      const nextPageCount = Math.max(1, Number(data.pagination?.pageCount || 1));
+      setOrderTotal(Number(data.pagination?.total || 0));
+      setOrderPageCount(nextPageCount);
+      if (orderPage > nextPageCount) setOrderPage(nextPageCount);
+    } catch (error) {
+      setFeedbackMsg({
+        type: "error",
+        text: error instanceof Error ? error.message : "Sipariş sayfası yüklenemedi.",
+      });
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, [deferredOrderSearch, orderPage, orderStoreFilter]);
 
   useEffect(() => {
     // Effect gövdesinde senkron setState yapılmaz; yükleme async akışta yönetilir.
-    async function run() {
-      await fetchAdminData();
-    }
-    void run();
-  }, []);
+    void fetchAdminData();
+  }, [fetchAdminData]);
+
+  useEffect(() => {
+    void fetchOrderPage();
+  }, [fetchOrderPage]);
 
   const handleCreateStore = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,8 +168,9 @@ export function AdminDashboard({
           storeName,
           marketplace,
           buyerName: buyerName || "Alıcı Sorumlusu",
-          defaultCard,
-          defaultEmail: defaultEmail || `${storeCode.toLowerCase()}@cerberus-commerce.io`,
+          ...(currentUser.role === "ADMIN"
+            ? { defaultCard, defaultEmail }
+            : {}),
           notes: storeNotes,
         }),
       });
@@ -240,15 +273,26 @@ export function AdminDashboard({
   // Delete a specific row from orders table
   const handleDeleteOrderRow = async (orderId: number) => {
     try {
-      const res = await fetch("/api/admin/master-crud", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tableName: "orders", id: orderId }),
-      });
+      const isAdmin = currentUser.role === "ADMIN";
+      const res = await fetch(
+        isAdmin ? "/api/admin/master-crud" : `/api/orders/${orderId}`,
+        {
+          method: "DELETE",
+          ...(isAdmin
+            ? {
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tableName: "orders", id: orderId }),
+              }
+            : {}),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setOrders((prev) => prev.filter((o) => o.id !== orderId));
         showFeedback("Sipariş satırı veritabanından kalıcı olarak silindi.");
+        await fetchOrderPage();
         if (onDataRefresh) onDataRefresh();
+      } else {
+        showFeedback(data.error || "Sipariş silinemedi.", "error");
       }
     } catch {
       showFeedback("Silme başarısız oldu", "error");
@@ -282,7 +326,7 @@ export function AdminDashboard({
       if (res.ok && data.success) {
         showFeedback(data.message);
         setConfirmationInput("");
-        fetchAdminData();
+        await Promise.all([fetchAdminData(), fetchOrderPage()]);
         if (onDataRefresh) onDataRefresh();
       } else {
         showFeedback(data.error || "İşlem başarısız", "error");
@@ -299,16 +343,8 @@ export function AdminDashboard({
   const totalUsers = users.length;
   const totalGlobalSpend = stores.reduce((sum, s) => sum + Number(s.totalSpend || 0), 0);
 
-  const displayedOrders = orders.filter((o) => {
-    const matchStore = orderStoreFilter === "ALL" || o.buyerStore === orderStoreFilter;
-    const q = orderSearchQuery.toLowerCase();
-    const matchSearch =
-      !q ||
-      o.orderNumber?.toLowerCase().includes(q) ||
-      o.asin?.toLowerCase().includes(q) ||
-      o.productTitle?.toLowerCase().includes(q);
-    return matchStore && matchSearch;
-  });
+  // Filtreleme API tarafında yapılır; `orders` yalnız mevcut 50 satırlık sayfadır.
+  const displayedOrders = orders;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -333,14 +369,16 @@ export function AdminDashboard({
         <div>
           <div className="flex items-center gap-2.5 mb-1">
             <span className="px-2.5 py-0.5 rounded text-[10px] font-mono-tech uppercase font-bold bg-brand/20 text-brand-soft border border-brand/30">
-              SİSTEM ADMIN MERKEZİ
+              {currentUser.role === "ADMIN" ? "SİSTEM ADMIN MERKEZİ" : "OPERASYON YÖNETİM MERKEZİ"}
             </span>
             <h2 className="text-lg font-bold text-ink tracking-tight">
               Çoklu Mağaza Filosu, Yetki, Sipariş &amp; Veritabanı Temizleme Konsolu
             </h2>
           </div>
           <p className="text-xs text-ink-muted font-mono-tech">
-            26 mağazayı denetleyin, kullanıcıların mağazalarını atayın, sipariş satırlarını yönetin ve gerçek canlı verilerinizi yüklemek için temizlik araçlarını kullanın.
+            {currentUser.role === "ADMIN"
+              ? "Mağazaları ve kullanıcı atamalarını yönetin; denetim ve geliştirme araçlarını kontrollü kullanın."
+              : "Mağaza operasyonlarını, siparişleri, denetim izini ve karar eşiklerini yönetin."}
           </p>
         </div>
 
@@ -350,10 +388,12 @@ export function AdminDashboard({
             <span className="text-[10px] text-ink-faint block uppercase">Mağaza Filosu</span>
             <span className="text-ink font-bold">{activeStores} Aktif / {totalStores} Mağaza</span>
           </div>
-          <div className="bg-surface-base px-3.5 py-2.5 rounded-xl border border-line text-center">
-            <span className="text-[10px] text-ink-faint block uppercase">Uzman Personel</span>
-            <span className="text-brand-soft font-bold">{totalUsers} Kullanıcı</span>
-          </div>
+          {currentUser.role === "ADMIN" && (
+            <div className="bg-surface-base px-3.5 py-2.5 rounded-xl border border-line text-center">
+              <span className="text-[10px] text-ink-faint block uppercase">Uzman Personel</span>
+              <span className="text-brand-soft font-bold">{totalUsers} Kullanıcı</span>
+            </div>
+          )}
           <div className="bg-surface-base px-3.5 py-2.5 rounded-xl border border-brand/40 text-center">
             <span className="text-[10px] text-brand-soft block uppercase">Konsolide Tedarik Bedeli</span>
             <span className="text-positive font-bold">${totalGlobalSpend.toLocaleString()}</span>
@@ -375,17 +415,19 @@ export function AdminDashboard({
           <span>1. Mağaza Yönetimi ({stores.length})</span>
         </button>
 
-        <button
-          onClick={() => setActiveSubTab("USERS")}
-          className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap ${
-            activeSubTab === "USERS"
-              ? "bg-brand text-ink shadow-lg shadow-brand/25"
-              : "text-ink-muted hover:text-ink hover:bg-surface-2"
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>2. Kullanıcı &amp; Mağaza İzolasyonu ({users.length})</span>
-        </button>
+        {currentUser.role === "ADMIN" && (
+          <button
+            onClick={() => setActiveSubTab("USERS")}
+            className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap ${
+              activeSubTab === "USERS"
+                ? "bg-brand text-ink shadow-lg shadow-brand/25"
+                : "text-ink-muted hover:text-ink hover:bg-surface-2"
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>2. Kullanıcı &amp; Mağaza İzolasyonu ({users.length})</span>
+          </button>
+        )}
 
         <button
           onClick={() => setActiveSubTab("ORDERS_CRUD")}
@@ -396,7 +438,7 @@ export function AdminDashboard({
           }`}
         >
           <FileSpreadsheet className="w-4 h-4 text-positive" />
-          <span>3. Siparişler &amp; Toplu Düzenleme ({orders.length})</span>
+          <span>3. Siparişler &amp; Yönetim ({orderTotal})</span>
         </button>
 
         <button
@@ -423,17 +465,19 @@ export function AdminDashboard({
           <span>5. Denetim İzi (Audit Log)</span>
         </button>
 
-        <button
-          onClick={() => setActiveSubTab("DB_TOOLS")}
-          className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap border ${
-            activeSubTab === "DB_TOOLS"
-              ? "bg-danger text-ink border-danger shadow-lg shadow-danger/25"
-              : "bg-danger/10 text-danger border-danger/30 hover:bg-danger/20"
-          }`}
-        >
-          <Database className="w-4 h-4 text-danger" />
-          <span>6. 🧹 Veritabanı Temizleme &amp; Sıfırlama Araçları</span>
-        </button>
+        {currentUser.role === "ADMIN" && (
+          <button
+            onClick={() => setActiveSubTab("DB_TOOLS")}
+            className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap border ${
+              activeSubTab === "DB_TOOLS"
+                ? "bg-danger text-ink border-danger shadow-lg shadow-danger/25"
+                : "bg-danger/10 text-danger border-danger/30 hover:bg-danger/20"
+            }`}
+          >
+            <Database className="w-4 h-4 text-danger" />
+            <span>6. 🧹 Veritabanı Temizleme &amp; Sıfırlama Araçları</span>
+          </button>
+        )}
         <button
           onClick={() => setActiveSubTab("SETTINGS")}
           className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap border ${
@@ -512,7 +556,9 @@ export function AdminDashboard({
                   </div>
 
                   <div className="pt-3 border-t border-line flex items-center justify-between text-xs font-mono-tech">
-                    <span className="text-ink-faint text-[11px]">Kart: **** {st.defaultCard || "1753"}</span>
+                    <span className="text-ink-faint text-[11px]">
+                      Kart: {st.defaultCard || "Tanımlı değil"}
+                    </span>
                     {onStoreSelected && (
                       <button
                         onClick={() => onStoreSelected(st.storeCode)}
@@ -532,7 +578,7 @@ export function AdminDashboard({
       {/* ========================================================================= */}
       {/* 2. KULLANICI & MAĞAZA ATAMALARI TAB'I                                     */}
       {/* ========================================================================= */}
-      {activeSubTab === "USERS" && (
+      {activeSubTab === "USERS" && currentUser.role === "ADMIN" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold text-ink uppercase font-mono-tech">
@@ -619,7 +665,7 @@ export function AdminDashboard({
           <div className="bg-surface-1 border border-line rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-ink uppercase font-mono-tech">
-                Tüm Mağazaların Sipariş Listesi ({displayedOrders.length} Kayıt)
+                Sipariş Yönetimi ({orderTotal} filtrelenmiş kayıt)
               </h3>
               <p className="text-xs text-ink-muted font-mono-tech">
                 Herhangi bir hatalı satırı tek tıkla silebilir veya inceleyebilirsiniz.
@@ -629,7 +675,10 @@ export function AdminDashboard({
             <div className="flex items-center gap-2.5">
               <select
                 value={orderStoreFilter}
-                onChange={(e) => setOrderStoreFilter(e.target.value)}
+                onChange={(e) => {
+                  setOrderStoreFilter(e.target.value);
+                  setOrderPage(1);
+                }}
                 className="bg-surface-base border border-line rounded-xl px-3 py-1.5 text-xs font-mono-tech text-brand-soft font-bold"
               >
                 <option value="ALL">TÜM MAĞAZALAR</option>
@@ -642,7 +691,10 @@ export function AdminDashboard({
               <input
                 type="text"
                 value={orderSearchQuery}
-                onChange={(e) => setOrderSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setOrderSearchQuery(e.target.value);
+                  setOrderPage(1);
+                }}
                 placeholder="Order No veya ASIN ara..."
                 className="px-3 py-1.5 bg-surface-base border border-line rounded-xl text-xs font-mono-tech text-ink"
               />
@@ -665,7 +717,7 @@ export function AdminDashboard({
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {displayedOrders.map((o) => (
+                {!ordersLoading && displayedOrders.map((o) => (
                   <tr key={o.id} className="hover:bg-surface-3/40">
                     <td className="p-3 text-ink-faint">#{o.id}</td>
                     <td className="p-3 font-bold text-brand-soft">{o.buyerStore}</td>
@@ -690,8 +742,46 @@ export function AdminDashboard({
                     </td>
                   </tr>
                 ))}
+                {ordersLoading && (
+                  <tr>
+                    <td colSpan={9} className="p-8 text-center text-ink-muted">
+                      Sipariş sayfası yükleniyor…
+                    </td>
+                  </tr>
+                )}
+                {!ordersLoading && displayedOrders.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="p-8 text-center text-ink-muted">
+                      Bu filtrelerle eşleşen sipariş bulunamadı.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-surface-1 px-4 py-3 font-mono-tech text-xs">
+            <span className="text-ink-muted">
+              Sayfa {orderPage} / {orderPageCount} · Toplam {orderTotal} kayıt · Sayfa başına 50
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={ordersLoading || orderPage <= 1}
+                onClick={() => setOrderPage((page) => Math.max(1, page - 1))}
+                className="rounded-lg border border-line bg-surface-2 px-3 py-1.5 font-bold text-ink transition hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Önceki
+              </button>
+              <button
+                type="button"
+                disabled={ordersLoading || orderPage >= orderPageCount}
+                onClick={() => setOrderPage((page) => Math.min(orderPageCount, page + 1))}
+                className="rounded-lg border border-line bg-surface-2 px-3 py-1.5 font-bold text-ink transition hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Sonraki
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -807,7 +897,7 @@ export function AdminDashboard({
       {/* ========================================================================= */}
       {/* 6. VERİTABANI TEMİZLEME & SIFIRLAMA ARAÇLARI (DATABASE CLEAN & RESET)      */}
       {/* ========================================================================= */}
-      {activeSubTab === "DB_TOOLS" && (
+      {activeSubTab === "DB_TOOLS" && currentUser.role === "ADMIN" && (
         <div className="space-y-6">
           <div className="bg-danger/10 border border-danger/40 rounded-2xl p-5 flex items-start gap-3">
             <AlertTriangle className="w-6 h-6 text-danger shrink-0 mt-0.5" />
@@ -816,7 +906,7 @@ export function AdminDashboard({
                 ⚠️ DANGER ZONE: Veritabanı Temizleme &amp; Gerçek Veri Hazırlık Merkezi
               </h3>
               <p className="text-xs text-ink-muted font-mono-tech mt-1">
-                Kendi gerçek Google Drive / Excel sipariş verilerinizi yüklemeden önce mevcut test/demo siparişlerini tek tıkla temizleyebilir veya dilediğinizde 38 gerçek Vitamin Shoppe siparişini fabrika verisi olarak geri getirebilirsiniz.
+                Kendi Google Drive / Excel sipariş verilerinizi yüklemeden önce mevcut test/demo siparişlerini temizleyebilir veya 24 satırlık Vitamin Shoppe geliştirme verisini geri yükleyebilirsiniz.
               </p>
             </div>
           </div>
@@ -880,7 +970,7 @@ export function AdminDashboard({
                 <p className="text-xs text-ink-muted font-mono-tech mt-2 leading-relaxed">
                   Tüm demo siparişlerini (`orders`) ve PSH sevkiyat partilerini (`psh_batches`) temizler.  
                   <strong className="text-positive block mt-1">
-                    ✓ 26 Mağaza tanımınız ve kullanıcı hesaplarınız (Harun, Selin, Can, Ahmet) KORUNUR!
+                    ✓ Mağaza tanımlarınız ve kullanıcı hesaplarınız KORUNUR!
                   </strong>
                 </p>
               </div>
@@ -901,10 +991,10 @@ export function AdminDashboard({
                   REFERANS VERİYİ GERİ YÜKLE
                 </span>
                 <h4 className="text-base font-bold text-ink mt-2">
-                  2. 38 Gerçek XLS Siparişi Yükle
+                  2. 24 Satırlık Geliştirme Verisini Yükle
                 </h4>
                 <p className="text-xs text-ink-muted font-mono-tech mt-2 leading-relaxed">
-                  Paylaştığınız 40-kolonluk The Vitamin Shoppe 38 gerçek siparişini (`WO110074776` vb.), Google Drive linklerini ve PSH partilerini tek tıkla geri getirir.
+                  Depodaki 24 satırlık The Vitamin Shoppe geliştirme verisini (`WO110074776` vb.), bağlantıları ve PSH partileriyle birlikte geri getirir. Canlı veri olarak kullanılmamalıdır.
                 </p>
               </div>
 
@@ -913,7 +1003,7 @@ export function AdminDashboard({
                 onClick={() => handleExecuteDatabaseTool("RESTORE_REAL_XLS")}
                 className="w-full py-3 rounded-xl bg-brand hover:bg-brand-soft disabled:opacity-40 text-ink font-mono-tech text-xs font-bold uppercase tracking-wider transition shadow-lg shadow-brand/20"
               >
-                {resettingDb ? "Yükleniyor..." : "38 Gerçek Siparişi Geri Yükle"}
+                {resettingDb ? "Yükleniyor..." : "24 Fixture Siparişini Geri Yükle"}
               </button>
             </div>
 
@@ -1010,28 +1100,35 @@ export function AdminDashboard({
                     className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
                   />
                 </div>
-                <div>
-                  <label className="block text-ink-muted mb-1">Ödeme Kartı Son 4</label>
-                  <input
-                    type="text"
-                    maxLength={4}
-                    value={defaultCard}
-                    onChange={(e) => setDefaultCard(e.target.value)}
-                    className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink font-bold"
-                  />
-                </div>
+                {currentUser.role === "ADMIN" && (
+                  <div>
+                    <label className="block text-ink-muted mb-1">Ödeme Kartı Son 4</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="\d{4}"
+                      maxLength={4}
+                      placeholder="İsteğe bağlı"
+                      value={defaultCard}
+                      onChange={(e) => setDefaultCard(e.target.value.replace(/\D/g, ""))}
+                      className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink font-bold"
+                    />
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block text-ink-muted mb-1">Mağaza Sipariş E-posta Adresi</label>
-                <input
-                  type="email"
-                  placeholder="amz03@cerberus-commerce.io"
-                  value={defaultEmail}
-                  onChange={(e) => setDefaultEmail(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
-                />
-              </div>
+              {currentUser.role === "ADMIN" && (
+                <div>
+                  <label className="block text-ink-muted mb-1">Mağaza Sipariş E-posta Adresi</label>
+                  <input
+                    type="email"
+                    placeholder="İsteğe bağlı"
+                    value={defaultEmail}
+                    onChange={(e) => setDefaultEmail(e.target.value)}
+                    className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                  />
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-line">
                 <button

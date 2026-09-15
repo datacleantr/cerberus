@@ -12,6 +12,12 @@
  *   - Fallback yoksa stealth JS fetch tek başına çalışır (geliştirilmiş).
  */
 
+import {
+  assertSafeOutboundUrl,
+  readResponseTextWithLimit,
+  validateOutboundUrlSyntax,
+} from "@/lib/httpSafety";
+
 export interface ScrapedItem {
   sourceUrl: string;
   sourceDomain: string;
@@ -35,21 +41,17 @@ export interface ScrapeResult {
   engine: "js-stealth" | "scrapling-service";
 }
 
-// ---------------------------------------------------------------------------
-// SSRF koruması
-// ---------------------------------------------------------------------------
-const BLOCKED_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "169.254.169.254"]);
-const BLOCKED_PREFIXES = ["10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31."];
-
-function isBlockedHostname(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  if (BLOCKED_HOSTS.has(h)) return true;
-  if (h === "metadata.google.internal") return true;
-  if (BLOCKED_PREFIXES.some((p) => h.startsWith(p))) return true;
-  if (h.endsWith(".internal") || h.endsWith(".local")) return true;
-  return false;
+function throwOutboundPolicyError(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  const forbidden = /özel|ayrılmış|güvenlik politikası|izin listesi|kullanıcı bilgisi/i.test(
+    message
+  );
+  throw Object.assign(new Error(message), { status: forbidden ? 403 : 422 });
 }
 
+// ---------------------------------------------------------------------------
+// URL normalizasyonu
+// ---------------------------------------------------------------------------
 function extractDomain(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -365,16 +367,24 @@ function parseGeneric(html: string, baseUrl: string, domain: string): ScrapedIte
 async function tryScraplingService(url: string): Promise<ScrapeResult | null> {
   const svc = process.env.SCRAPLING_SERVICE_URL?.trim();
   if (!svc) return null;
+  const token = process.env.SCRAPLING_SERVICE_TOKEN?.trim();
+  // Public bir SSRF proxy'sine dönüşmemesi için mikro-servis paylaşımlı sır
+  // olmadan hiçbir zaman çağrılmaz.
+  if (!token || token.length < 32) return null;
   try {
     const endpoint = svc.replace(/\/$/, "") + "/scrape";
     const r = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Scrapling-Token": token,
+      },
       body: JSON.stringify({ url }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(35_000),
     });
     if (!r.ok) return null;
-    const j = (await r.json()) as ScrapeResult & { products: ScrapedItem[] };
+    const raw = await readResponseTextWithLimit(r, 1024 * 1024);
+    const j = JSON.parse(raw) as ScrapeResult & { products: ScrapedItem[] };
     if (!j.products?.length) return null;
     return { ...j, engine: "scrapling-service" };
   } catch {
@@ -382,7 +392,31 @@ async function tryScraplingService(url: string): Promise<ScrapeResult | null> {
   }
 }
 
-async function fetchWithStealth(url: string, attempt = 0): Promise<{ html: string; finalUrl: string }> {
+function crawlerAllowedHosts(): string[] | undefined {
+  const configured = process.env.CRAWLER_ALLOWED_HOSTS?.split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  return configured?.length ? configured : undefined;
+}
+
+async function fetchWithStealth(
+  rawUrl: string,
+  attempt = 0,
+  redirectCount = 0
+): Promise<{ html: string; finalUrl: string }> {
+  // Her istekten ve her yönlendirmeden önce DNS yeniden denetlenir. `fetch`
+  // otomatik redirect takip etmez; aksi halde güvenli bir public URL özel ağa
+  // 302 ile sıçrayabilirdi.
+  let safeUrl: URL;
+  try {
+    safeUrl = await assertSafeOutboundUrl(rawUrl, {
+      allowedHosts: crawlerAllowedHosts(),
+    });
+  } catch (error) {
+    throwOutboundPolicyError(error);
+  }
+  const url = safeUrl.toString();
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   let response: Response;
@@ -390,58 +424,77 @@ async function fetchWithStealth(url: string, attempt = 0): Promise<{ html: strin
     response = await fetch(url, {
       headers: stealthHeaders(url),
       signal: controller.signal,
-      redirect: "follow",
+      redirect: "manual",
     });
   } catch (e: unknown) {
-    clearTimeout(timeout);
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("aborted") || msg.includes("AbortError")) throw new Error("Site 15 saniyede yanıt vermedi (timeout).");
+    if (msg.includes("aborted") || msg.includes("AbortError")) {
+      throw new Error("Site 15 saniyede yanıt vermedi (timeout).");
+    }
     throw new Error(`Ağ hatası: ${msg}`);
   } finally {
     clearTimeout(timeout);
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    if (redirectCount >= 3) throw new Error("Site çok fazla yönlendirme döndürdü.");
+    const location = response.headers.get("location");
+    if (!location) throw new Error("Site geçersiz bir yönlendirme döndürdü.");
+    const redirected = new URL(location, url).toString();
+    return fetchWithStealth(redirected, attempt, redirectCount + 1);
   }
 
   // 403/429 → Scrapling service veya UA rotasyonu ile retry
   if ((response.status === 403 || response.status === 429) && attempt < 1) {
     const svc = await tryScraplingService(url);
     if (svc) throw Object.assign(new Error("__SCRAPLING_FALLBACK__"), { __fallback: svc });
-    // kısa bekle, farklı UA ile tekrar dene
-    await new Promise((r) => setTimeout(r, 800 + Math.random() * 700));
-    return fetchWithStealth(url, attempt + 1);
+    await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 700));
+    return fetchWithStealth(url, attempt + 1, redirectCount);
   }
 
-  if (!response.ok) throw new Error(`Site hatası ${response.status} ${response.statusText}. URL'yi kontrol edin.`);
-  const ct = response.headers.get("content-type") || "";
-  if (ct && !ct.includes("text/html") && !ct.includes("application/xhtml") && !ct.includes("text/plain")) {
-    throw new Error(`Bu URL HTML değil (${ct}). Ürün/kategori sayfası deneyin.`);
+  if (!response.ok) {
+    throw new Error(`Site hatası ${response.status} ${response.statusText}. URL'yi kontrol edin.`);
   }
-  const len = Number(response.headers.get("content-length") || "0");
-  if (len > 3 * 1024 * 1024) throw new Error("Sayfa çok büyük (>3 MB), taranamadı.");
+  const contentType = response.headers.get("content-type") || "";
+  if (
+    contentType &&
+    !contentType.includes("text/html") &&
+    !contentType.includes("application/xhtml") &&
+    !contentType.includes("text/plain")
+  ) {
+    throw new Error(`Bu URL HTML değil (${contentType}). Ürün/kategori sayfası deneyin.`);
+  }
 
-  const html = await response.text();
-  if (html.length > 3_000_000) throw new Error("Sayfa çok büyük, taranamadı.");
+  let html: string;
+  try {
+    html = await readResponseTextWithLimit(response, 3 * 1024 * 1024);
+  } catch (error) {
+    const tooLarge = error instanceof Error && error.message.includes("sınırını");
+    throw Object.assign(
+      new Error(tooLarge ? "Sayfa çok büyük (>3 MB), taranamadı." : "Site yanıtı okunamadı."),
+      { status: tooLarge ? 413 : 502 }
+    );
+  }
   if (html.length < 500) throw new Error("Sayfa boş veya erişim engellendi.");
   if (looksLikeBotChallenge(html)) {
-    // challenge tespit — Scrapling'e bırak yoksa açıklayıcı hata
     const svc = await tryScraplingService(url);
     if (svc) throw Object.assign(new Error("__SCRAPLING_FALLBACK__"), { __fallback: svc });
     throw new Error("Site bot korumasını tetikledi (Cloudflare/Turnstile). Tek ürün sayfasını deneyin veya SCRAPLING_SERVICE_URL yapılandırın — ayrıntılar docs/CRAWLER.md.");
   }
-  return { html, finalUrl: response.url || url };
+  return { html, finalUrl: url };
 }
 
 // ---------------------------------------------------------------------------
 // Ana giriş
 // ---------------------------------------------------------------------------
 export async function scrapeUrl(rawUrl: string): Promise<ScrapeResult> {
-  let url: URL;
+  // Hızlı sözdizimi/politika kontrolü burada; DNS ve redirect kontrolleri gerçek
+  // outbound isteğin hemen öncesinde `fetchWithStealth` içinde tekrarlanır.
   try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error(`Geçersiz URL: ${rawUrl}`);
+    validateOutboundUrlSyntax(rawUrl, { allowedHosts: crawlerAllowedHosts() });
+  } catch (error) {
+    throwOutboundPolicyError(error);
   }
-  if (!url.protocol.startsWith("http")) throw new Error("Yalnızca http/https URL'leri taranabilir.");
-  if (isBlockedHostname(url.hostname)) throw new Error("Bu host taranamaz (güvenlik politikası).");
 
   const sourceDomain = extractDomain(rawUrl);
   const normalized = normalizeUrl(rawUrl);

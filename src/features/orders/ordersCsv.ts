@@ -107,18 +107,54 @@ export function buildOrdersCsv(orders: OrderView[]): string {
   return [XLS_40_COLUMNS.map(csvCell).join(","), ...rows.map((r) => r.join(","))].join("\r\n");
 }
 
-/** Tarayıcıda indirme tetikler (Blob kullanır — encodeURI limiti yok) */
-export function downloadOrdersCsv(orders: OrderView[], storeCode: string): void {
-  const csv = "\uFEFF" + buildOrdersCsv(orders);
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+/** Tarayıcıda verilen Blob için güvenli indirme tetikler. */
+function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `CERBERUS_${storeCode}_40KOLON_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+/** Yalnız eldeki satırları indirir; test/çevrimdışı kullanım için korunur. */
+export function downloadOrdersCsv(orders: OrderView[], storeCode: string): void {
+  const csv = "\uFEFF" + buildOrdersCsv(orders);
+  downloadBlob(
+    new Blob([csv], { type: "text/csv;charset=utf-8;" }),
+    `CERBERUS_${storeCode}_40KOLON_${new Date().toISOString().slice(0, 10)}.csv`
+  );
+}
+
+/**
+ * Tüm filtrelenmiş sonucu sunucudan akış olarak indirir. Böylece sayfalı
+ * arayüzde yalnız görünen 50 satırın yanlışlıkla "tam export" sanılması önlenir.
+ */
+export async function downloadFilteredOrdersCsv(options: {
+  storeCode: string;
+  search: string;
+  cargo: string;
+  batch: string;
+}): Promise<void> {
+  const params = new URLSearchParams({ storeCode: options.storeCode });
+  if (options.search.trim()) params.set("search", options.search.trim());
+  if (options.cargo !== "ALL") params.set("cargoStatus", options.cargo);
+  if (options.batch !== "ALL") params.set("pshBatchNo", options.batch);
+
+  const response = await fetch(`/api/orders/export?${params.toString()}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error || "CSV dışa aktarımı başarısız oldu.");
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ||
+    `CERBERUS_${options.storeCode}_40KOLON_${new Date().toISOString().slice(0, 10)}.csv`;
+  downloadBlob(await response.blob(), filename);
 }
 
 /** Görüntülenen satırlardan KPI hesabı — sunucu özetiyle aynı tanımları kullanır */
@@ -126,12 +162,18 @@ export function computeOrderKpis(orders: OrderView[]): OrderKpis {
   const totalUnits = orders.reduce((s, o) => s + Number(o.quantity || 0), 0);
   const totalSpend = orders.reduce((s, o) => s + Number(o.totalCost || 0), 0);
   const totalShipped = orders.reduce((s, o) => s + Number(o.shippedToAmazon || 0), 0);
-  const totalRevenueEst = orders.reduce(
-    (s, o) => s + Number(o.sellingPrice || 0) * Number(o.shippedToAmazon || o.quantity || 0),
-    0
-  );
+  const totalRevenueEst = orders.reduce((sum, order) => {
+    const fire =
+      Number(order.p1CancelQty || 0) +
+      Number(order.p2MissingQty || 0) +
+      Number(order.p3DefectiveQty || 0) +
+      Number(order.p4ExpiredQty || 0);
+    const saleableUnits = Math.max(0, Number(order.quantity || 0) - fire);
+    return sum + Number(order.sellingPrice || 0) * saleableUnits;
+  }, 0);
   const totalRefunds = orders.reduce((s, o) => s + Number(o.refundAmount || 0), 0);
-  const grossNetEst = totalRevenueEst - totalSpend;
+  const effectiveCost = Math.max(0, totalSpend - totalRefunds);
+  const grossNetEst = totalRevenueEst - effectiveCost;
 
   return {
     totalOrders: orders.length,
@@ -141,7 +183,7 @@ export function computeOrderKpis(orders: OrderView[]): OrderKpis {
     totalRevenueEst: totalRevenueEst.toFixed(2),
     grossNetEst: grossNetEst.toFixed(2),
     // Veri yoksa "41.4" gibi uydurma bir ROI göstermek yerine "—" döner (F-15)
-    avgRoi: totalSpend > 0 ? ((grossNetEst / totalSpend) * 100).toFixed(1) : "—",
+    avgRoi: effectiveCost > 0 ? ((grossNetEst / effectiveCost) * 100).toFixed(1) : "—",
     fulfillmentRate: totalUnits > 0 ? Math.round((totalShipped / totalUnits) * 100) : 0,
     problemCount: orders.filter(isProblemOrder).length,
     totalRefunds: totalRefunds.toFixed(2),

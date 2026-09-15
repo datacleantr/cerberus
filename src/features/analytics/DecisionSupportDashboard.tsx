@@ -105,9 +105,9 @@ export function DecisionSupportDashboard({ storeCode }: { storeCode: string }) {
           <div className="text-[11px] font-mono-tech text-ink-faint">P1 {kpis.p1} • P2 {kpis.p2} • P3 {kpis.p3} • P4 {kpis.p4}</div>
         </div>
         <div className="rounded-2xl border border-line bg-surface-1 p-3">
-          <div className="text-[10px] font-mono-tech uppercase tracking-widest text-ink-faint">Refund / Sızıntı</div>
+          <div className="text-[10px] font-mono-tech uppercase tracking-widest text-ink-faint">Tedarikçi İadesi</div>
           <div className="mt-1 text-lg font-bold tabular text-caution">${kpis.totalRefunds.toLocaleString("tr-TR")}</div>
-          <div className="text-[11px] font-mono-tech text-ink-faint">%{kpis.refundRate} harcama oranı</div>
+          <div className="text-[11px] font-mono-tech text-ink-faint">Harcamanın %{kpis.refundRate} kadarı geri kazanıldı</div>
         </div>
         <div className="rounded-2xl border border-line bg-surface-1 p-3">
           <div className="text-[10px] font-mono-tech uppercase tracking-widest text-ink-faint">Fırsat Sinyali</div>

@@ -10,10 +10,19 @@ export interface SessionUser {
   avatar?: string | null;
 }
 
+export interface SessionClaims extends SessionUser {
+  /** Password-hash fingerprint; password reset immediately revokes old JWTs. */
+  authVersion: string;
+}
+
 export const SESSION_COOKIE = "cerberus_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8 saat (kaydırmalı yenileme Faz 6'da)
 
 const ALLOWED_ROLES: ReadonlyArray<SessionUser["role"]> = ["ADMIN", "MANAGER", "STORE_USER"];
+
+export function isSessionRole(value: string): value is SessionUser["role"] {
+  return ALLOWED_ROLES.includes(value as SessionUser["role"]);
+}
 
 // YALNIZCA lokal geliştirme içindir. Üretimde (NODE_ENV=production) SESSION_SECRET
 // zorunludur; eksikse oturumlar fail-closed olarak tamamen devre dışı kalır.
@@ -33,12 +42,22 @@ function getSecretKey(): Uint8Array | null {
   return new TextEncoder().encode(DEV_ONLY_SECRET);
 }
 
+export async function createAuthVersion(passwordHash: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(passwordHash));
+  return Array.from(new Uint8Array(digest).slice(0, 16))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /**
  * Oturum için imzalı JWT (HS256) üretir.
  * Önceki base64-JSON çerezinin aksine içerik kurcalanamaz ve 8 saatte sona erer.
  * SESSION_SECRET üretimde tanımsızsa null döner (route 500 döner, kullanıcı açığa çıkmaz).
  */
-export async function createSessionToken(user: SessionUser): Promise<string | null> {
+export async function createSessionToken(
+  user: SessionUser,
+  authVersion: string
+): Promise<string | null> {
   const key = getSecretKey();
   if (!key) return null;
 
@@ -48,6 +67,7 @@ export async function createSessionToken(user: SessionUser): Promise<string | nu
     role: user.role,
     storeCode: user.storeCode,
     avatar: user.avatar ?? null,
+    authVersion,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(String(user.id))
@@ -61,7 +81,7 @@ export async function createSessionToken(user: SessionUser): Promise<string | nu
  * İmzayı ve süreyi doğrular; herhangi bir hata/eksikte null döner.
  * Eski (base64-JSON) çerezler doğal olarak reddedilir.
  */
-export async function verifySessionToken(token: string): Promise<SessionUser | null> {
+export async function verifySessionToken(token: string): Promise<SessionClaims | null> {
   const key = getSecretKey();
   if (!key) return null;
 
@@ -69,7 +89,8 @@ export async function verifySessionToken(token: string): Promise<SessionUser | n
     const { payload } = await jwtVerify(token, key, { issuer: "cerberus-auth" });
     const id = Number(payload.sub);
     const role = payload.role as SessionUser["role"];
-    if (!Number.isFinite(id) || !ALLOWED_ROLES.includes(role)) return null;
+    const authVersion = String(payload.authVersion ?? "");
+    if (!Number.isFinite(id) || !ALLOWED_ROLES.includes(role) || !authVersion) return null;
 
     return {
       id,
@@ -78,6 +99,7 @@ export async function verifySessionToken(token: string): Promise<SessionUser | n
       role,
       storeCode: String(payload.storeCode ?? ""),
       avatar: (payload.avatar as string | null) ?? null,
+      authVersion,
     };
   } catch {
     return null;

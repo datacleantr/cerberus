@@ -6,7 +6,7 @@ import { resolveProduct, normalizeAsin } from "@/db/resolveProduct";
 import { parseBody, orderCreateSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { maskOrderForRole, minimizeUsersForRole } from "@/lib/privacy";
-import { desc, eq, and, inArray, count, sql } from "drizzle-orm";
+import { desc, eq, and, inArray, count, sql, ilike, or, type SQL } from "drizzle-orm";
 
 export async function GET(req: Request) {
   try {
@@ -20,16 +20,22 @@ export async function GET(req: Request) {
     const requestedStore = searchParams.get("storeCode") || "ALL";
     const cargoStatus = searchParams.get("cargoStatus");
     const pshBatchNo = searchParams.get("pshBatchNo");
+    const search = (searchParams.get("search") || "").trim().slice(0, 120);
 
-    // Sayfalama standardı (T3.2): page 1'den başlar, pageSize üst sınırı 2000
-    const page = Math.max(1, Number(searchParams.get("page")) || 1);
-    const pageSize = Math.min(2000, Math.max(1, Number(searchParams.get("pageSize")) || 200));
+    // Kontrollü sayfalama: NaN/Infinity ve aşırı DOM/yanıt boyutları engellenir.
+    const requestedPage = Number(searchParams.get("page"));
+    const requestedPageSize = Number(searchParams.get("pageSize"));
+    const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const pageSize =
+      Number.isSafeInteger(requestedPageSize) && requestedPageSize > 0
+        ? Math.min(200, requestedPageSize)
+        : 50;
 
     // Mağaza izolasyonu sunucuda, oturum claim'inden zorlanır (F-11):
     // istemciden gelen storeCode parametresi STORE_USER için yok sayılır.
     const effectiveStore = resolveStoreScope(currentUser, requestedStore);
 
-    const conditions = [];
+    const conditions: SQL[] = [];
     if (effectiveStore && effectiveStore !== "ALL") {
       conditions.push(eq(orders.buyerStore, effectiveStore));
     }
@@ -38,6 +44,19 @@ export async function GET(req: Request) {
     }
     if (pshBatchNo && pshBatchNo !== "ALL") {
       conditions.push(eq(orders.pshBatchNo, pshBatchNo));
+    }
+    if (search) {
+      const pattern = `%${search}%`;
+      const searchCondition = or(
+        ilike(orders.orderNumber, pattern),
+        ilike(orders.asin, pattern),
+        ilike(orders.msku, pattern),
+        ilike(orders.productTitle, pattern),
+        ilike(orders.brandName, pattern),
+        ilike(orders.supplierName, pattern),
+        ilike(orders.orderEmail, pattern)
+      );
+      if (searchCondition) conditions.push(searchCondition);
     }
 
     const ordersBase = db.select().from(orders);
@@ -64,6 +83,13 @@ export async function GET(req: Request) {
       p3DefectiveTotal: sql<string>`coalesce(sum(${orders.p3DefectiveQty}), 0)`,
       p4ExpiredTotal: sql<string>`coalesce(sum(${orders.p4ExpiredQty}), 0)`,
       totalRefunds: sql<string>`coalesce(sum(${orders.refundAmount}), 0)`,
+      estimatedRevenue: sql<string>`coalesce(sum(
+        ${orders.sellingPrice} * greatest(
+          ${orders.quantity} - ${orders.p1CancelQty} - ${orders.p2MissingQty}
+          - ${orders.p3DefectiveQty} - ${orders.p4ExpiredQty},
+          0
+        )
+      ), 0)`,
       problemOrdersCount: sql<string>`count(*) filter (where
         ${orders.cargoStatus} = 'İPTAL'
         or ${orders.p1CancelQty} > 0
@@ -79,23 +105,32 @@ export async function GET(req: Request) {
 
     const [[kpi], allStores, allBatches, allAuditLogs, allUsers] = await Promise.all([
       kpiQuery,
-      db.select().from(stores).orderBy(stores.storeCode),
+      currentUser.role === "STORE_USER" && effectiveStore !== "ALL"
+        ? db.select().from(stores).where(eq(stores.storeCode, effectiveStore)).orderBy(stores.storeCode)
+        : db.select().from(stores).orderBy(stores.storeCode),
       effectiveStore && effectiveStore !== "ALL"
         ? db.select().from(pshBatches).where(eq(pshBatches.storeCode, effectiveStore)).orderBy(desc(pshBatches.createdAt))
         : db.select().from(pshBatches).orderBy(desc(pshBatches.createdAt)),
-      db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(40),
-      // password_hash asla istemciye taşınmaz — yalnızca güvenli alanlar seçilir
-      db
-        .select({
-          id: users.id,
-          name: users.name,
-          email: users.email,
-          role: users.role,
-          storeCode: users.storeCode,
-          avatar: users.avatar,
-          createdAt: users.createdAt,
-        })
-        .from(users),
+      currentUser.role === "STORE_USER"
+        ? Promise.resolve([])
+        : effectiveStore !== "ALL"
+          ? db.select().from(auditLogs).where(eq(auditLogs.storeCode, effectiveStore)).orderBy(desc(auditLogs.createdAt)).limit(40)
+          : db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(40),
+      // Kullanıcı dizini sipariş ekranının ihtiyacı değildir; yalnız ADMIN'e
+      // güvenli alanlarla döner. Mağaza kullanıcılarına personel envanteri sızmaz.
+      currentUser.role === "ADMIN"
+        ? db
+            .select({
+              id: users.id,
+              name: users.name,
+              email: users.email,
+              role: users.role,
+              storeCode: users.storeCode,
+              avatar: users.avatar,
+              createdAt: users.createdAt,
+            })
+            .from(users)
+        : Promise.resolve([]),
     ]);
 
     const totalOrdersCount = Number(kpi?.totalOrdersCount || 0);
@@ -107,7 +142,10 @@ export async function GET(req: Request) {
     const p3DefectiveTotal = Number(kpi?.p3DefectiveTotal || 0);
     const p4ExpiredTotal = Number(kpi?.p4ExpiredTotal || 0);
     const totalRefunds = Number(kpi?.totalRefunds || 0);
+    const estimatedRevenue = Number(kpi?.estimatedRevenue || 0);
     const problemOrdersCount = Number(kpi?.problemOrdersCount || 0);
+    const effectiveCost = Math.max(0, totalSpend - totalRefunds);
+    const estimatedNet = estimatedRevenue - effectiveCost;
 
     return NextResponse.json({
       // T7.2 (KVKK): yanıt role göre minimize edilir — kart son-4 ve alıcı e-postası
@@ -136,6 +174,10 @@ export async function GET(req: Request) {
         p3DefectiveTotal,
         p4ExpiredTotal,
         totalRefunds: totalRefunds.toFixed(2),
+        estimatedRevenue: estimatedRevenue.toFixed(2),
+        estimatedNet: estimatedNet.toFixed(2),
+        estimatedRoi: effectiveCost > 0 ? ((estimatedNet / effectiveCost) * 100).toFixed(1) : "—",
+        fulfillmentRate: totalUnits > 0 ? Math.round((totalShippedToAmazon / totalUnits) * 100) : 0,
       },
     });
   } catch (error: unknown) {
@@ -185,10 +227,11 @@ export async function POST(req: Request) {
       problemAction = "",
       problemResult = "",
       refundAmount = 0,
-      creditCard = "1753",
+      creditCard = "",
       isFragile = "NO",
       isMultiPack = "NO",
       isBundle = "NO",
+      countPerBundle = null,
       condition = "New",
       brandName = "General",
       description1 = "",
@@ -228,6 +271,7 @@ export async function POST(req: Request) {
         isFragile,
         isMultiPack,
         isBundle,
+        countPerBundle,
         supplierName,
         supplierCode,
         supplierUrl,
@@ -272,6 +316,7 @@ export async function POST(req: Request) {
         isFragile,
         isMultiPack,
         isBundle,
+        countPerBundle,
         condition,
         brandName,
         description1,

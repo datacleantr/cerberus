@@ -5,6 +5,7 @@ import { requireUser, isDenied } from "@/lib/guards";
 import { handleRouteError } from "@/lib/apiResponse";
 import { getThresholds } from "@/lib/settings";
 import { eq } from "drizzle-orm";
+import { parseBody, settingsUpdateSchema } from "@/lib/validation";
 
 export async function GET() {
   try {
@@ -30,15 +31,9 @@ export async function PUT(req: Request) {
     if (gate.user.role !== "ADMIN" && gate.user.role !== "MANAGER") {
       return NextResponse.json({ error: "Yalnızca ADMIN/MANAGER eşikleri değiştirebilir." }, { status: 403 });
     }
-    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-    const rejectRoi = Number(body.rejectRoi);
-    const testRoi = Number(body.testRoi);
-    const keepaKey = typeof body.keepaKey === "string" ? body.keepaKey.trim() : undefined;
-
-    if (!Number.isFinite(rejectRoi) || rejectRoi < 0 || rejectRoi > 100) return NextResponse.json({ error: "rejectRoi 0-100 arası olmalı" }, { status: 400 });
-    if (!Number.isFinite(testRoi) || testRoi < 0 || testRoi > 100) return NextResponse.json({ error: "testRoi 0-100 arası olmalı" }, { status: 400 });
-    if (rejectRoi >= testRoi) return NextResponse.json({ error: "REJECT eşiği TEST eşiğinden küçük olmalı (örn. 25 < 38)" }, { status: 400 });
-    if (keepaKey !== undefined && keepaKey.length > 0 && keepaKey.length < 10) return NextResponse.json({ error: "Keepa anahtarı çok kısa" }, { status: 400 });
+    const parsed = await parseBody(req, settingsUpdateSchema);
+    if ("response" in parsed) return parsed.response;
+    const { rejectRoi, testRoi, keepaKey } = parsed.data;
 
     const val = JSON.stringify({ rejectRoi, testRoi });
     const existing = await db.select().from(appSettings).where(eq(appSettings.key, "roi_thresholds")).limit(1);

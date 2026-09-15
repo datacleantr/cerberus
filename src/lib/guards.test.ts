@@ -1,23 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SessionUser } from "@/lib/session";
 
-// next/headers'ı mock'la: getCurrentUser çerez deposunu buradan okuyor
-vi.mock("next/headers", () => {
-  let cookieValue: string | null = null;
+vi.mock("@/lib/auth", () => {
+  let currentUser: SessionUser | null = null;
   return {
-    __setCookie: (v: string | null) => {
-      cookieValue = v;
+    __setCurrentUser: (user: SessionUser | null) => {
+      currentUser = user;
     },
-    cookies: async () => ({
-      get: (name: string) =>
-        cookieValue && name === "cerberus_session" ? { value: cookieValue } : undefined,
-    }),
+    getCurrentUser: async () => currentUser,
   };
 });
 
-import * as headersMock from "next/headers";
+import * as authMock from "@/lib/auth";
 import { requireUser, requireRole, resolveStoreScope, canAccessStore } from "@/lib/guards";
-import { createSessionToken } from "@/lib/session";
 
 const storeUser: SessionUser = {
   id: 3,
@@ -27,37 +22,42 @@ const storeUser: SessionUser = {
   storeCode: "HRN",
   avatar: "HR",
 };
-const adminUser: SessionUser = { ...storeUser, id: 1, role: "ADMIN", storeCode: "ALL", name: "Ahmet" };
+const adminUser: SessionUser = {
+  ...storeUser,
+  id: 1,
+  role: "ADMIN",
+  storeCode: "ALL",
+  name: "Ahmet",
+};
 
 describe("Yetki guard'ları (F-02/F-05/F-11)", () => {
   beforeEach(() => {
-    process.env.SESSION_SECRET =
-      "guard-test-secret-must-be-at-least-32-chars!!";
-    (headersMock as any).__setCookie(null);
+    (authMock as unknown as { __setCurrentUser: (user: SessionUser | null) => void })
+      .__setCurrentUser(null);
   });
 
-  it("çerez yoksa requireUser 401 döner", async () => {
+  it("oturum yoksa requireUser 401 döner", async () => {
     const gate = await requireUser();
     expect("response" in gate && gate.response.status).toBe(401);
   });
 
   it("geçerli oturumla requireUser kullanıcıyı döner", async () => {
-    const token = await createSessionToken(storeUser);
-    (headersMock as any).__setCookie(token);
+    (authMock as unknown as { __setCurrentUser: (user: SessionUser) => void })
+      .__setCurrentUser(storeUser);
     const gate = await requireUser();
     expect("user" in gate && gate.user.email).toBe(storeUser.email);
   });
 
   it("STORE_USER, ADMIN uçlarında 403 alır (requireRole)", async () => {
-    const token = await createSessionToken(storeUser);
-    (headersMock as any).__setCookie(token);
+    (authMock as unknown as { __setCurrentUser: (user: SessionUser) => void })
+      .__setCurrentUser(storeUser);
     const gate = await requireRole("ADMIN");
     expect("response" in gate && gate.response.status).toBe(403);
   });
 
   it("ADMIN, ADMIN uçlarından geçer", async () => {
-    const token = await createSessionToken(adminUser);
-    (headersMock as any).__setCookie(token);
+    (authMock as unknown as { __setCurrentUser: (user: SessionUser) => void })
+      .__setCurrentUser(adminUser);
     const gate = await requireRole("ADMIN");
     expect("user" in gate && gate.user.role).toBe("ADMIN");
   });

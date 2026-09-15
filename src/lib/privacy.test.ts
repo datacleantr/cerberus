@@ -29,9 +29,10 @@ describe("KVKK veri minimizasyonu (T7.2)", () => {
     expect(maskEmail("bozuk")).toBe("***");
   });
 
-  it("maskCreditCard her zaman maskeler", () => {
+  it("maskCreditCard tanımlı değeri maskeler, eksik değer uydurmaz", () => {
     expect(maskCreditCard("9999")).toBe("••••");
-    expect(maskCreditCard(null)).toBe("••••");
+    expect(maskCreditCard(null)).toBe("");
+    expect(maskCreditCard(undefined)).toBe("");
   });
 
   it("kullanıcı listesi: ADMIN tam alir, STORE_USER minimal versiyon alir", () => {

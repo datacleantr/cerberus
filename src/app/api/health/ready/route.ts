@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 import { log } from "@/lib/logger";
+import { MIGRATION_MANIFEST } from "@/db/migrationManifest";
 
 /**
  * T6.3 — Derin sağlık kontrolü (readiness): uptime sistemleri /api/health'i,
@@ -10,14 +11,12 @@ import { log } from "@/lib/logger";
  * 2026-09-06: "veritabanı kurulu mu?" sorusu artık bu uçtan, giriş yapmadan
  * görülebilir. Eski hâli yalnızca `SELECT 1` yapıyordu; Neon erişilebilir ama
  * migration/seed uygulanmamış olsa bile "ready" diyordu. Artık:
- *   - migration'lar uygulanmış mı (>= 4)
+ *   - migration sayısı ve son migration hash'i kodun beklediği head ile eşleşiyor mu
  *   - seed var mı (users > 0 && stores > 0)
  *   - ürüne bağlanmamış (yetim) sipariş var mı
  * bilgileri `checks` + `detail` altında raporlanır. Şema eksikse 500 değil,
  * ilgili kontrol false döner; hata detayları yalnız sunucu loguna yazılır.
  */
-
-const EXPECTED_MIGRATIONS = 4;
 
 function rowsOf(result: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(result)) return result as Array<Record<string, unknown>>;
@@ -41,10 +40,15 @@ export async function GET() {
       !!process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 32,
     migrationsApplied: false,
     seedPresent: false,
+    orderProductIntegrity: false,
   };
 
   const detail: Record<string, unknown> = {
     migrations: null,
+    expectedMigrations: MIGRATION_MANIFEST.count,
+    migrationHead: null,
+    expectedMigrationHead: MIGRATION_MANIFEST.latestTag,
+    expectedMigrationHash: MIGRATION_MANIFEST.latestHash,
     users: null,
     stores: null,
     orders: null,
@@ -63,8 +67,19 @@ export async function GET() {
       const applied = await countOf(
         "select count(*)::int as n from drizzle.__drizzle_migrations"
       );
+      const headRows = rowsOf(
+        await db.execute(
+          sql.raw(
+            "select hash from drizzle.__drizzle_migrations order by created_at desc limit 1"
+          )
+        )
+      );
+      const appliedHead = String(headRows[0]?.hash ?? "");
       detail.migrations = applied;
-      checks.migrationsApplied = applied !== null && applied >= EXPECTED_MIGRATIONS;
+      detail.migrationHead = appliedHead || null;
+      checks.migrationsApplied =
+        applied === MIGRATION_MANIFEST.count &&
+        appliedHead === MIGRATION_MANIFEST.latestHash;
     } catch (error) {
       log.error("GET /api/health/ready", "Migration kontrolü başarısız", error);
     }
@@ -78,6 +93,8 @@ export async function GET() {
 
     checks.seedPresent =
       Number(detail.users ?? 0) > 0 && Number(detail.stores ?? 0) > 0;
+    checks.orderProductIntegrity =
+      detail.orphanOrders !== null && Number(detail.orphanOrders) === 0;
   }
 
   const ready = Object.values(checks).every(Boolean);

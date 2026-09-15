@@ -8,8 +8,9 @@
  * besleme döngüsünün kopuk olduğu yer burasıydı.
  *
  * ŞİMDİ: Gerçekleşen ROI, o ürüne (ASIN/MSKU) ait **fiilen kapanmış
- * siparişlerden** hesaplanır. Fire (P1–P4) ve iadeler maliyet tarafında
- * gerçek kayıp olarak düşülür. Ölçülecek veri yoksa sayı **uydurulmaz**,
+ * siparişlerden** hesaplanır. Fire (P1–P4) maliyet tarafında kayıp olarak
+ * kalır; tedarikçinin karta yaptığı `refundAmount` tahsilatı maliyetten mahsup
+ * edilir. Ölçülecek veri yoksa sayı **uydurulmaz**,
  * `null` döner ve arayüz "henüz ölçülmedi" gösterir.
  *
  * Tasarım ilkesi: eksik veriyi tahminle doldurmak, eksik veriyi göstermekten
@@ -36,7 +37,7 @@ export interface RealizedOrderFacts {
   p3DefectiveQty: number;
   /** P4 tarihi geçmiş adedi */
   p4ExpiredQty: number;
-  /** İade tutarı ($) */
+  /** Tedarikçinin ödeme kartına geri yatırdığı tutar ($) */
   refundAmount: number;
   /** Kargo durumu — 'İPTAL' ise gelir yazılmaz */
   cargoStatus: string;
@@ -49,7 +50,7 @@ export interface RealizedRoiResult {
   realizedUnits: number;
   /** Sevk edilen adetten doğan brüt gelir */
   realizedRevenue: number;
-  /** Fire + iade dahil gerçekleşen toplam maliyet */
+  /** Tedarikçi iadesi düşüldükten sonraki gerçekleşen net maliyet */
   realizedCost: number;
   /** Gelir - maliyet */
   realizedNetProfit: number;
@@ -130,8 +131,11 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
     realizedRevenue += billable * price;
   }
 
-  // İadeler brüt gelirden düşülür — müşteriye geri ödenen para gelir değildir.
-  realizedRevenue = Math.max(0, realizedRevenue - totalRefunds);
+  // Kilitli XLS sözleşmesinde refund, tedarikçinin ödeme kartına yaptığı
+  // geri ödemedir; müşteri satış iadesi değildir. Bu nedenle geliri azaltmaz,
+  // satın alma maliyetini mahsup eder. Refund maliyeti aşarsa negatif maliyet
+  // üretmeyiz (fazla tahsilat ayrıca muhasebe mutabakatı gerektirir).
+  realizedCost = Math.max(0, realizedCost - totalRefunds);
 
   const result: RealizedRoiResult = {
     realizedRoiPercent: null,

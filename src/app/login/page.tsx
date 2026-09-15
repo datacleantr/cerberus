@@ -99,7 +99,7 @@ export default function LoginPage() {
           </div>
 
           <div className="font-mono-tech text-[10px] text-ink-faint">
-            © {new Date().getFullYear()} Cerberus Commerce — Tüm oturumlar denetim kaydına alınır.
+            © {new Date().getFullYear()} Cerberus Commerce — Erişim rol ve mağaza kapsamıyla korunur.
           </div>
         </section>
 
@@ -212,8 +212,8 @@ export default function LoginPage() {
             <div className="mt-6 flex items-center gap-2 rounded-xl border border-line bg-surface-1 px-3.5 py-3">
               <Lock className="h-3.5 w-3.5 shrink-0 text-positive" />
               <p className="font-mono-tech text-[10px] leading-relaxed text-ink-faint">
-                Bağlantı TLS ile şifrelenir. Başarısız denemeler sınırlandırılır ve denetim
-                kaydına alınır. Hesabınız yoksa sistem yöneticinizle görüşün.
+                Bağlantı TLS ile şifrelenir ve başarısız denemeler hız sınırıyla korunur.
+                Hesabınız yoksa sistem yöneticinizle görüşün.
               </p>
             </div>
           </div>

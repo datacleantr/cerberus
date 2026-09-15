@@ -14,8 +14,9 @@ import {
 } from "@/db/schema";
 import { requireRole, isDenied } from "@/lib/guards";
 import { handleRouteError } from "@/lib/apiResponse";
+import { parseBody, dbResetSchema } from "@/lib/validation";
 import { insertOrdersWithProducts } from "@/db/resolveProduct";
-import { eq, ne } from "drizzle-orm";
+import { ne } from "drizzle-orm";
 
 export async function POST(req: Request) {
   // T0.2: Bu yıkıcı araç üretim ortamında tamamen devre dışıdır.
@@ -30,34 +31,33 @@ export async function POST(req: Request) {
     const currentUser = gate.user;
 
     // T2.5: Demo/fixture verisi yalnızca bu dev-only araç içinde, ihtiyaç anında yüklenir
-    const { ALL_38_XLS_ORDERS, INITIAL_STORES, INITIAL_BATCHES } = await import("@fixtures/mockData");
+    const { ALL_38_XLS_ORDERS: FIXTURE_ORDERS, INITIAL_BATCHES } = await import(
+      "@fixtures/mockData"
+    );
 
-    const { actionType, confirmationCode } = await req.json();
-
-    if (confirmationCode !== "RESET-CERBERUS") {
-      return NextResponse.json(
-        { error: "Güvenlik kodu hatalı. Lütfen 'RESET-CERBERUS' onay kodunu girin." },
-        { status: 400 }
-      );
-    }
+    const parsed = await parseBody(req, dbResetSchema);
+    if ("response" in parsed) return parsed.response;
+    const { actionType } = parsed.data;
 
     if (actionType === "CLEAN_ORDERS_ONLY") {
       // 1. Sadece Siparişleri ve PSH Partilerini Temizle (Kullanıcılar & Mağazalar Kalır)
       // Ürün kataloğu KORUNUR: keşfedilmiş ürün bilgisi siparişten bağımsız
       // bir varlıktır. Ama fiyat gözlemleri siparişlerden türediği için
       // onlarla birlikte gider.
-      await db.delete(orders);
-      await db.delete(pshBatches);
-      await db.delete(supplierOffers);
+      await db.transaction(async (tx) => {
+        await tx.delete(orders);
+        await tx.delete(pshBatches);
+        await tx.delete(supplierOffers);
 
-      await db.insert(auditLogs).values({
-        actorName: currentUser.name,
-        storeCode: "ALL",
-        actionType: "DATABASE_CLEAN_ORDERS",
-        targetEntity: "orders & psh_batches",
-        beforeState: "DOLU_VERITABANI",
-        afterState: "TEMIZ_SIPARIS_HAVUZU",
-        details: "Tüm siparişler ve PSH partileri temizlendi. Kullanıcılar ve 26 mağaza tanımı korundu.",
+        await tx.insert(auditLogs).values({
+          actorName: currentUser.name,
+          storeCode: "ALL",
+          actionType: "DATABASE_CLEAN_ORDERS",
+          targetEntity: "orders & psh_batches",
+          beforeState: "DOLU_VERITABANI",
+          afterState: "TEMIZ_SIPARIS_HAVUZU",
+          details: "Tüm siparişler ve PSH partileri temizlendi. Kullanıcı ve mağaza tanımları korundu.",
+        });
       });
 
       return NextResponse.json({
@@ -67,45 +67,44 @@ export async function POST(req: Request) {
     }
 
     if (actionType === "RESTORE_REAL_XLS") {
-      // 2. The Vitamin Shoppe 38 Gerçek Siparişini Geri Yükle
-      await db.delete(orders);
-      await db.delete(supplierOffers);
-      // Ürün kataloğunu da besleyerek yükler (Aşama 1.2)
-      await db.transaction(async (tx) => {
-        await insertOrdersWithProducts(tx, orders, ALL_38_XLS_ORDERS as any[]);
-      });
+      // Siparişler psh_batches'e FK ile bağlıdır. Eski sipariş -> eski batch
+      // silme ve yeni batch -> yeni sipariş ekleme sırası tek transaction'dadır.
+      const restoredCount = await db.transaction(async (tx) => {
+        await tx.delete(orders);
+        await tx.delete(supplierOffers);
+        await tx.delete(pshBatches);
+        await tx.insert(pshBatches).values(
+          INITIAL_BATCHES.map((b) => ({
+            batchNumber: b.batchNumber,
+            storeCode: b.storeCode,
+            title: b.title,
+            status: b.status,
+            totalItemsCount: b.totalItemsCount,
+            totalUnitsCount: b.totalUnitsCount,
+            receivedUnitsCount: b.receivedUnitsCount,
+            missingUnitsCount: b.missingUnitsCount,
+            defectiveUnitsCount: b.defectiveUnitsCount,
+            inventoryLabSynced: b.inventoryLabSynced,
+            notes: b.notes,
+          }))
+        );
 
-      // PSH Batch'lerini de kontrol et
-      await db.delete(pshBatches);
-      await db.insert(pshBatches).values(
-        INITIAL_BATCHES.map((b) => ({
-          batchNumber: b.batchNumber,
-          storeCode: b.storeCode,
-          title: b.title,
-          status: b.status,
-          totalItemsCount: b.totalItemsCount,
-          totalUnitsCount: b.totalUnitsCount,
-          receivedUnitsCount: b.receivedUnitsCount,
-          missingUnitsCount: b.missingUnitsCount,
-          defectiveUnitsCount: b.defectiveUnitsCount,
-          inventoryLabSynced: b.inventoryLabSynced,
-          notes: b.notes,
-        }))
-      );
-
-      await db.insert(auditLogs).values({
-        actorName: currentUser.name,
-        storeCode: "ALL",
-        actionType: "DATABASE_RESTORE_XLS",
-        targetEntity: `38 Gerçek Sipariş`,
-        beforeState: "MEVCUT_DURUM",
-        afterState: "40_KOLON_ORJINAL",
-        details: "The Vitamin Shoppe 38 gerçek siparişi ve PSH sevkiyat partileri veritabanına yeniden yüklendi.",
+        const written = await insertOrdersWithProducts(tx, orders, FIXTURE_ORDERS);
+        await tx.insert(auditLogs).values({
+          actorName: currentUser.name,
+          storeCode: "ALL",
+          actionType: "DATABASE_RESTORE_XLS",
+          targetEntity: `${written} fixture siparişi`,
+          beforeState: "MEVCUT_DURUM",
+          afterState: "FIXTURE_GERI_YUKLENDI",
+          details: `${written} sipariş ve PSH sevkiyat partileri geliştirme fixture'ından yeniden yüklendi.`,
+        });
+        return written;
       });
 
       return NextResponse.json({
         success: true,
-        message: "40-Kolonluk Google Drive XLS tablosundaki 38 gerçek sipariş ve PSH partileri başarıyla geri yüklendi.",
+        message: `${restoredCount} fixture siparişi ve PSH partileri başarıyla geri yüklendi.`,
       });
     }
 
@@ -118,25 +117,27 @@ export async function POST(req: Request) {
       // temizler. Aksi halde demo ürünler kalır ve gerçek siparişlerle
       // eşleşmediği için gerçekleşen ROI ölçümü kirlenir — sabah brifingi
       // olmayan ürünler üzerinden skor üretir.
-      await db.delete(orders);
-      await db.delete(pshBatches);
-      await db.delete(productMasters);
-      // Ürün merkezli çekirdek de sıfırlanır: demo ürünler kalırsa gerçek
-      // siparişlerle eşleşmeyip katalogu ve ROI ölçümünü kirletir.
-      await db.delete(supplierOffers);
-      await db.delete(productLifecycleEvents);
-      await db.delete(products);
-      await db.delete(researchSessions);
+      await db.transaction(async (tx) => {
+        await tx.delete(orders);
+        await tx.delete(pshBatches);
+        await tx.delete(productMasters);
+        // Ürün merkezli çekirdek de sıfırlanır: demo ürünler kalırsa gerçek
+        // siparişlerle eşleşmeyip katalogu ve ROI ölçümünü kirletir.
+        await tx.delete(supplierOffers);
+        await tx.delete(productLifecycleEvents);
+        await tx.delete(products);
+        await tx.delete(researchSessions);
 
-      await db.insert(auditLogs).values({
-        actorName: currentUser.name,
-        storeCode: "ALL",
-        actionType: "DATABASE_FRESH_START",
-        targetEntity: "orders, psh_batches, product_masters, research_sessions",
-        beforeState: "DEMO_VERISI",
-        afterState: "GERCEK_VERI_ICIN_HAZIR",
-        details:
-          "Tüm demo operasyonel verisi temizlendi. Mağazalar, kullanıcılar ve araştırmacı kadrosu korundu. Sistem gerçek Excel/Drive verisi için hazır.",
+        await tx.insert(auditLogs).values({
+          actorName: currentUser.name,
+          storeCode: "ALL",
+          actionType: "DATABASE_FRESH_START",
+          targetEntity: "orders, psh_batches, product_masters, research_sessions",
+          beforeState: "DEMO_VERISI",
+          afterState: "GERCEK_VERI_ICIN_HAZIR",
+          details:
+            "Tüm demo operasyonel verisi temizlendi. Mağazalar, kullanıcılar ve araştırmacı kadrosu korundu. Sistem gerçek Excel/Drive verisi için hazır.",
+        });
       });
 
       return NextResponse.json({
@@ -148,33 +149,35 @@ export async function POST(req: Request) {
 
     if (actionType === "NUKE_ALL_KEEP_ADMIN") {
       // 3. Admin Hariç Tüm Tabloları Temizle
-      await db.delete(orders);
-      await db.delete(pshBatches);
-      await db.delete(productMasters);
-      // Ürün merkezli çekirdek de sıfırlanır: demo ürünler kalırsa gerçek
-      // siparişlerle eşleşmeyip katalogu ve ROI ölçümünü kirletir.
-      await db.delete(supplierOffers);
-      await db.delete(productLifecycleEvents);
-      await db.delete(products);
-      await db.delete(researchSessions);
-      await db.delete(auditLogs);
+      await db.transaction(async (tx) => {
+        await tx.delete(orders);
+        await tx.delete(pshBatches);
+        await tx.delete(productMasters);
+        // Ürün merkezli çekirdek de sıfırlanır: demo ürünler kalırsa gerçek
+        // siparişlerle eşleşmeyip katalogu ve ROI ölçümünü kirletir.
+        await tx.delete(supplierOffers);
+        await tx.delete(productLifecycleEvents);
+        await tx.delete(products);
+        await tx.delete(researchSessions);
+        await tx.delete(auditLogs);
 
-      // Admin dışındaki kullanıcıları temizle
-      await db.delete(users).where(ne(users.role, "ADMIN"));
+        // Admin dışındaki kullanıcıları temizle; en az aktif admin oturumu kalır.
+        await tx.delete(users).where(ne(users.role, "ADMIN"));
 
-      await db.insert(auditLogs).values({
-        actorName: currentUser.name,
-        storeCode: "ALL",
-        actionType: "DATABASE_FACTORY_RESET",
-        targetEntity: "Tüm Tablolar",
-        beforeState: "DOLU",
-        afterState: "SIFIRLANDI",
-        details: "Fabrika ayarlarına dönüldü. Yalnızca Sistem Yöneticisi hesabı ve mağaza tanımları korundu.",
+        await tx.insert(auditLogs).values({
+          actorName: currentUser.name,
+          storeCode: "ALL",
+          actionType: "DATABASE_FACTORY_RESET",
+          targetEntity: "Tüm Tablolar",
+          beforeState: "DOLU",
+          afterState: "SIFIRLANDI",
+          details: "Fabrika ayarlarına dönüldü. ADMIN hesapları ve mağaza tanımları korundu.",
+        });
       });
 
       return NextResponse.json({
         success: true,
-        message: "Veritabanı fabrika ayarlarına sıfırlandı. Sadece Sistem Yöneticisi (Admin) hesabı bırakıldı.",
+        message: "Veritabanı fabrika ayarlarına sıfırlandı. ADMIN hesapları ve mağaza tanımları korundu.",
       });
     }
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { users, auditLogs } from "@/db/schema";
+import { users, stores, auditLogs } from "@/db/schema";
 import { requireRole, isDenied } from "@/lib/guards";
 import { hashPassword } from "@/lib/passwords";
 import { parseBody, userCreateSchema, userUpdateSchema } from "@/lib/validation";
@@ -42,6 +42,20 @@ export async function POST(req: Request) {
 
     const cleanEmail = email; // zod: trim + lowercase + email formatı zaten doğrulandı
 
+    if (role !== "ADMIN") {
+      const [assignedStore] = await db
+        .select({ code: stores.storeCode })
+        .from(stores)
+        .where(eq(stores.storeCode, storeCode))
+        .limit(1);
+      if (!assignedStore) {
+        return NextResponse.json(
+          { error: "Kullanıcı yalnızca tanımlı bir mağazaya atanabilir." },
+          { status: 422 }
+        );
+      }
+    }
+
     // Check duplicate email
     const existing = await db
       .select()
@@ -67,7 +81,7 @@ export async function POST(req: Request) {
         email: cleanEmail,
         // Parola her zaman bcrypt ile saklanır (F-03)
         passwordHash: await hashPassword(String(password)),
-        role: role as any,
+        role,
         storeCode: role === "ADMIN" ? "ALL" : storeCode,
         avatar,
       })
@@ -120,13 +134,36 @@ export async function PATCH(req: Request) {
     }
 
     const current = existing[0];
-    const updateData: Record<string, any> = {};
+    if (current.id === currentUser.id && role !== undefined && role !== "ADMIN") {
+      return NextResponse.json(
+        { error: "Aktif oturumdaki yönetici kendi ADMIN yetkisini kaldıramaz." },
+        { status: 409 }
+      );
+    }
+
+    const effectiveRole = role ?? current.role;
+    const effectiveStore = effectiveRole === "ADMIN" ? "ALL" : storeCode ?? current.storeCode;
+    if (effectiveRole !== "ADMIN") {
+      const [assignedStore] = await db
+        .select({ code: stores.storeCode })
+        .from(stores)
+        .where(eq(stores.storeCode, effectiveStore))
+        .limit(1);
+      if (!assignedStore) {
+        return NextResponse.json(
+          { error: "Kullanıcı yalnızca tanımlı bir mağazaya atanabilir." },
+          { status: 422 }
+        );
+      }
+    }
+
+    const updateData: Record<string, string> = {};
     if (name !== undefined) updateData.name = name;
     if (role !== undefined) {
       updateData.role = role;
       if (role === "ADMIN") updateData.storeCode = "ALL";
     }
-    if (storeCode !== undefined && role !== "ADMIN") {
+    if (storeCode !== undefined && effectiveRole !== "ADMIN") {
       updateData.storeCode = storeCode;
     }
     if (password) {

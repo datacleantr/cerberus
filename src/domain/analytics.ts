@@ -85,7 +85,10 @@ export function computeAnalyticsKpis(orders: Array<{
   }
   const fulfillmentRate = totalUnits ? Number(((totalShipped / totalUnits) * 100).toFixed(1)) : 0;
   const refundRate = totalSpend ? Number(((totalRefunds / totalSpend) * 100).toFixed(2)) : 0;
-  const grossProfit = Number((netRevenue - totalSpend - totalRefunds).toFixed(2));
+  // XLS'teki refund, tedarikçinin ödeme kartına yaptığı geri ödemedir;
+  // müşteri satış iadesi gibi gelirden düşülmez, maliyeti azaltır.
+  const effectiveCost = Math.max(0, totalSpend - totalRefunds);
+  const grossProfit = Number((netRevenue - effectiveCost).toFixed(2));
   const problemRate = n ? Number(((problemOrders / n) * 100).toFixed(1)) : 0;
   const avgUnitCost = totalUnits ? Number((totalSpend / totalUnits).toFixed(2)) : 0;
   return {
@@ -106,7 +109,10 @@ export function buildTrend(orders: Array<{ orderDate: string; quantity: number; 
     b.spend += Number(o.totalCost) || 0;
     b.shipped += Number(o.shippedToAmazon) || 0;
     b.refunds += Number(o.refundAmount) || 0;
-    b.netProfit += (Number(o.shippedToAmazon) || 0) * (Number(o.sellingPrice) || 0) - (Number(o.totalCost) || 0);
+    b.netProfit +=
+      (Number(o.shippedToAmazon) || 0) * (Number(o.sellingPrice) || 0) -
+      (Number(o.totalCost) || 0) +
+      (Number(o.refundAmount) || 0);
     bucket.set(key, b);
   }
   return Array.from(bucket.values()).sort((a, b) => a.period.localeCompare(b.period)).slice(-30);
@@ -149,7 +155,7 @@ export function buildAlerts(kpis: AnalyticsKpis, opportunities: BuyingOpportunit
   else if (kpis.problemRate > 10) alerts.push({ severity: "WARN", text: `Problem oranı %${kpis.problemRate} — izlemede`, metric: "problemRate" });
   if (kpis.fulfillmentRate < 60) alerts.push({ severity: "CRITICAL", text: `FBA sevk oranı %${kpis.fulfillmentRate} — ürünler depoda bekliyor`, metric: "fulfillmentRate" });
   else if (kpis.fulfillmentRate < 85) alerts.push({ severity: "WARN", text: `Sevk oranı %${kpis.fulfillmentRate} — partileme yavaş`, metric: "fulfillmentRate" });
-  if (kpis.refundRate > 5) alerts.push({ severity: "CRITICAL", text: `Refund oranı %${kpis.refundRate} — nakit sızıntısı`, metric: "refundRate" });
+  if (kpis.refundRate > 5) alerts.push({ severity: "CRITICAL", text: `Tedarikçi iade oranı %${kpis.refundRate} — fire/iptal kök nedenini inceleyin`, metric: "refundRate" });
   if (kpis.unbatchedCount > 5) alerts.push({ severity: "WARN", text: `${kpis.unbatchedCount} sipariş batch'siz — PSH partisi açın`, metric: "unbatched" });
   if (kpis.grossProfit < 0) alerts.push({ severity: "CRITICAL", text: `Net zarar $${Math.abs(kpis.grossProfit)} — marjlar gözden geçirilmeli`, metric: "grossProfit" });
   const opps = opportunities.filter((o) => o.isOpportunity).length;

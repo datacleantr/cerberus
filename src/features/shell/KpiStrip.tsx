@@ -74,7 +74,7 @@ export function KpiStrip({
       <Card
         label={`Sipariş • ${storeScope}`}
         value={`${kpis.totalOrders}`}
-        hint="Görüntülenen kayıt"
+        hint="Seçili filtredeki toplam"
         icon={ShoppingCart}
         tone="brand"
       />
@@ -102,7 +102,7 @@ export function KpiStrip({
       <Card
         label="Fire & problem"
         value={`${kpis.problemCount}`}
-        hint={`Refund: $${kpis.totalRefunds}`}
+        hint={`Tedarikçi iadesi: $${kpis.totalRefunds}`}
         icon={AlertTriangle}
         tone={kpis.problemCount > 0 ? "danger" : "positive"}
       />

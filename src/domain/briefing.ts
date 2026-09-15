@@ -113,7 +113,8 @@ export function computeBusinessHealth(
       ? clamp(Math.round((freshCount / masters.totalMasters) * 100), 0, 100)
       : 0;
 
-  // 5) Nakit sızıntısı: iade tutarının harcamaya oranı
+  // 5) Tedarikçi iade bağımlılığı: refund finansal olarak maliyeti geri kazandırır,
+  // fakat yüksek oran iptal/fire ve tedarikçi kalitesi sorununun sinyalidir.
   const refundRate = orders.totalSpend > 0 ? orders.totalRefunds / orders.totalSpend : 0;
   const cashScore = clamp(Math.round((1 - refundRate * 5) * 100), 0, 100);
 
@@ -143,7 +144,7 @@ export function computeBusinessHealth(
       detail: `${freshCount} / ${masters.totalMasters} ürün FRESH`,
     },
     {
-      axis: "Nakit Sızıntısı (Refund)",
+      axis: "Tedarikçi İade Bağımlılığı",
       weight: 0.13,
       score: cashScore,
       detail: `${money(orders.totalRefunds)} iade / ${money(orders.totalSpend)} harcama`,
@@ -208,7 +209,8 @@ export function buildWhatChanged(
     });
   }
 
-  const grossMargin = orders.estimatedRevenue - orders.totalSpend;
+  const grossMargin =
+    orders.estimatedRevenue - Math.max(0, orders.totalSpend - orders.totalRefunds);
   if (orders.estimatedRevenue > 0) {
     items.push({
       text: `Tahmini ciro ${money(orders.estimatedRevenue)}, tahmini brüt marj ${money(grossMargin)}.`,
@@ -237,7 +239,7 @@ export function buildWhatMatters(
 
   if (orders.totalRefunds > 0) {
     items.push({
-      text: `Toplam ${money(orders.totalRefunds)} refund kaydı açık; tazminat/iade dosyaları takipte.`,
+      text: `Toplam ${money(orders.totalRefunds)} tedarikçi iadesi kaydı var; ilişkili iptal/fire dosyalarının kök nedeni takip edilmeli.`,
       metric: "orders.totalRefunds",
       severity: "WARN",
     });
@@ -270,7 +272,7 @@ export function buildWhatMatters(
 
   if (items.length === 0 && orders.totalOrders > 0) {
     items.push({
-      text: "Açık risk kaydı yok: fire, refund, mükerrer ve onay kuyrukları temiz.",
+      text: "Açık risk kaydı yok: fire, tedarikçi iadesi, mükerrer ve onay kuyrukları temiz.",
       metric: "—",
       severity: "INFO",
     });

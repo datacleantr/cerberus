@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { requireUser, requireRole, isDenied, canAccessStore } from "@/lib/guards";
 import { parseBody, orderUpdateSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
+import { validateOrderQuantityPatch } from "@/domain/orderRules";
 
 export async function PATCH(
   req: Request,
@@ -41,6 +42,14 @@ export async function PATCH(
     }
 
     const current = existing[0];
+    const quantityIssues = validateOrderQuantityPatch(current, body);
+    if (quantityIssues.length > 0) {
+      return NextResponse.json(
+        { error: "Miktar doğrulaması başarısız.", details: quantityIssues },
+        { status: 422 }
+      );
+    }
+
     // Strict şema, alan listesinin kendisidir (T3.1): alan beyaz listesi tek yerde
     const updatePayload: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -97,7 +106,23 @@ export async function DELETE(
       return NextResponse.json({ error: "Sipariş bulunamadı" }, { status: 404 });
     }
 
-    await db.delete(orders).where(eq(orders.id, Number(id)));
+    await db.transaction(async (tx) => {
+      await tx.insert(auditLogs).values({
+        actorName: gate.user.name,
+        storeCode: existing[0].buyerStore,
+        actionType: "ORDER_DELETED",
+        targetEntity: `${existing[0].orderNumber} - ${existing[0].asin}`,
+        beforeState: JSON.stringify({
+          id: existing[0].id,
+          quantity: existing[0].quantity,
+          totalCost: existing[0].totalCost,
+          cargoStatus: existing[0].cargoStatus,
+        }),
+        afterState: "DELETED",
+        details: "Sipariş detay uç noktasından silindi.",
+      });
+      await tx.delete(orders).where(eq(orders.id, Number(id)));
+    });
 
     return NextResponse.json({
       message: "Sipariş silindi",

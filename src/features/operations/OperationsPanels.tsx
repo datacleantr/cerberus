@@ -311,7 +311,7 @@ export function ProblemsPanel({
       <div className="bg-surface-1 border border-danger/30 rounded-2xl p-5">
         <h2 className="text-base font-display font-bold text-ink flex items-center gap-2">
           <AlertTriangle className="w-5 h-5 text-danger" />
-          P1–P4 Fire, İptal ve Refund Yönetimi
+          P1–P4 Fire, İptal ve Tedarikçi İadesi Yönetimi
         </h2>
         <p className="text-xs text-ink-muted font-mono-tech mt-0.5">
           P1 (iptal), P2 (eksik), P3 (defolu), P4 (tarihi geçmiş) adetleri ve R-kodlu iade tutarları
@@ -328,7 +328,7 @@ export function ProblemsPanel({
                 <th className="p-3.5">Problem Türü</th>
                 <th className="p-3.5">Eylem</th>
                 <th className="p-3.5">Sonuç</th>
-                <th className="p-3.5 text-right">Refund</th>
+                <th className="p-3.5 text-right">Tedarikçi İadesi</th>
                 <th className="p-3.5 text-right">İşlem</th>
               </tr>
             </thead>
@@ -363,7 +363,7 @@ export function ProblemsPanel({
                         </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded bg-surface-3 text-ink-muted text-[10px]">
-                          Refund / kontrol
+                          İade / kontrol
                         </span>
                       )}
                     </td>
@@ -373,7 +373,7 @@ export function ProblemsPanel({
                     <td className="p-3.5 text-positive max-w-xs truncate">
                       {o.problemResult || "İşlem sürüyor"}
                     </td>
-                    <td className="p-3.5 text-right text-danger font-bold">${o.refundAmount}</td>
+                    <td className="p-3.5 text-right text-caution font-bold">${o.refundAmount}</td>
                     <td className="p-3.5 text-right">
                       <button
                         onClick={() => onSelect(o)}

@@ -29,10 +29,12 @@ describe("computeProductPnl", () => {
     expect(p.roiPercent).toBe(100);
   });
 
-  it("iadeler net gelirden düşülür", () => {
+  it("tedarikçi iadeleri net maliyetten mahsup edilir", () => {
     const p = computeProductPnl(pnlInput({ totalRefunds: 50 }));
-    expect(p.netRevenue).toBe(150);
-    expect(p.roiPercent).toBe(50);
+    expect(p.netRevenue).toBe(200);
+    expect(p.netCost).toBe(50);
+    expect(p.netProfit).toBe(150);
+    expect(p.roiPercent).toBe(300);
   });
 
   it("sipariş yoksa ROI null — sıfır değil", () => {
@@ -63,8 +65,9 @@ describe("computeProductPnl", () => {
 });
 
 describe("assessProductHealth — para kaybı her şeyin önünde gelir", () => {
-  it("gerçek vaka B01CQ3E6HG: ağır zarar -> STOP_LOSS", () => {
-    // Canlı veriden: $1027.91 maliyet, $240 gelir, $890.85 iade, 30'dan 26 fire
+  it("ağır fire tedarikçi iadesiyle karşılandıysa finansal zarar değil operasyon alarmı üretir", () => {
+    // $1027.91 ödeme - $890.85 tedarikçi iadesi = $137.06 net maliyet;
+    // $240 sevk geliri kârlı olsa da 30 adetten 26 fire operasyonel olarak kritiktir.
     const h = assessProductHealth(
       pnlInput({
         orderCount: 5,
@@ -76,10 +79,10 @@ describe("assessProductHealth — para kaybı her şeyin önünde gelir", () => 
         totalRefunds: 890.85,
       })
     );
-    expect(h.verdict).toBe("STOP_LOSS");
-    expect(h.severity).toBe("CRITICAL");
-    expect(h.reasons.some((r) => r.includes("fire"))).toBe(true);
-    expect(h.recommendedAction).toContain("durdurun");
+    expect(h.verdict).toBe("FIX_OPERATIONS");
+    expect(h.severity).toBe("WARN");
+    expect(h.reasons.some((r) => r.toLocaleLowerCase("tr").includes("fire"))).toBe(true);
+    expect(h.recommendedAction).toContain("denetleyin");
   });
 
   it("zarar varken maliyet düşse bile SCALE_UP önerilmez", () => {

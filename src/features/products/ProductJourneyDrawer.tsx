@@ -403,9 +403,9 @@ export function ProductJourneyDrawer({
                     tone={detail.pnl.lossRatePercent > 25 ? "danger" : "neutral"}
                   />
                   <Stat
-                    label="İade Tutarı"
+                    label="Tedarikçi İadesi"
                     value={money(detail.operations.totalRefunds)}
-                    tone={detail.operations.totalRefunds > 0 ? "danger" : "neutral"}
+                    tone={detail.operations.totalRefunds > 0 ? "caution" : "neutral"}
                   />
                 </div>
 

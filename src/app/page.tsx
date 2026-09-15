@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 
 import { OrderDetailDrawer } from "@/components/OrderDetailDrawer";
@@ -31,10 +31,9 @@ import {
   PshBatchPanel,
   WarehousePanel,
 } from "@/features/operations/OperationsPanels";
-import { computeOrderKpis, downloadOrdersCsv, filterOrders } from "@/features/orders/ordersCsv";
+import { downloadFilteredOrdersCsv } from "@/features/orders/ordersCsv";
 import { clientLog } from "@/lib/clientLogger";
 import type { OrderView, ProductMasterView, ProductView, TabId } from "@/features/types";
-import { isProblemOrder } from "@/features/types";
 
 /** Her sekmenin üst çubukta gösterilecek başlık ve açıklaması */
 const PAGE_META: Record<TabId, { title: string; subtitle: string }> = {
@@ -89,10 +88,21 @@ const PAGE_META: Record<TabId, { title: string; subtitle: string }> = {
 };
 
 export default function CerberusApp() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearch = useDeferredValue(searchQuery);
+  const [cargoFilter, setCargoFilter] = useState("ALL");
+  const [batchFilter, setBatchFilter] = useState("ALL");
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderPageSize, setOrderPageSize] = useState(50);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const {
     currentUser,
     checkingAuth,
     orders,
+    orderKpis,
+    orderPagination,
     stores,
     batches,
     productMasters,
@@ -109,15 +119,18 @@ export default function CerberusApp() {
     applyMasterPatch,
     prependOrder,
     logout,
-  } = useCerberusData();
+  } = useCerberusData({
+    page: orderPage,
+    pageSize: orderPageSize,
+    search: deferredSearch,
+    cargo: cargoFilter,
+    batch: batchFilter,
+  });
 
   const [activeTab, setActiveTab] = useState<TabId>("BRIEFING_DECISION");
   const [navCollapsed, toggleCollapse] = useNavPreference();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [cargoFilter, setCargoFilter] = useState("ALL");
-  const [batchFilter, setBatchFilter] = useState("ALL");
   const [decisionFilter, setDecisionFilter] = useState("ALL");
 
   const [selectedOrder, setSelectedOrder] = useState<OrderView | null>(null);
@@ -133,13 +146,11 @@ export default function CerberusApp() {
     !isAdmin && currentUser?.storeCode && currentUser.storeCode !== "ALL"
   );
 
-  const filteredOrders = useMemo(
-    () => filterOrders(orders, { search: searchQuery, cargo: cargoFilter, batch: batchFilter }),
-    [orders, searchQuery, cargoFilter, batchFilter]
-  );
-
-  const kpis = useMemo(() => computeOrderKpis(filteredOrders), [filteredOrders]);
-  const problemCount = useMemo(() => orders.filter(isProblemOrder).length, [orders]);
+  // Sipariş arama/filtreleme sunucuda uygulanır; `orders` yalnızca geçerli
+  // sayfadır, KPI'lar ise aynı filtrenin tüm kayıtlarından SQL ile hesaplanır.
+  const filteredOrders = orders;
+  const kpis = orderKpis;
+  const problemCount = orderKpis.problemCount;
 
   const navGroups = useMemo(
     () =>
@@ -147,13 +158,13 @@ export default function CerberusApp() {
         masters: productMasters.length,
         products: products.length,
         researchers: researchers.length,
-        orders: orders.length,
+        orders: orderKpis.totalOrders,
         batches: batches.length,
         problems: problemCount,
         stores: stores.length,
         isAdmin: Boolean(isAdmin),
       }),
-    [productMasters.length, products.length, researchers.length, orders.length, batches.length, problemCount, stores.length, isAdmin]
+    [productMasters.length, products.length, researchers.length, orderKpis.totalOrders, batches.length, problemCount, stores.length, isAdmin]
   );
 
   const navigate = useCallback((id: TabId) => {
@@ -166,12 +177,14 @@ export default function CerberusApp() {
       applyOrderPatch(id, updates);
       setSelectedOrder((prev) => (prev && prev.id === id ? { ...prev, ...updates } : prev));
       try {
-        const res = await fetch(`/api/orders/${id}`, {
+        await fetch(`/api/orders/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(updates),
         });
-        if (!res.ok) await refresh();
+        // Güncelleme KPI, brifing ve ürün P&L'ını etkileyebilir; sunucu tekrar
+        // okunarak iyimser görünüm kesin sonuçla uzlaştırılır.
+        await refresh();
       } catch (err) {
         clientLog.error("orders/update", "Sipariş güncelleme başarısız", { err: String(err) });
         await refresh();
@@ -188,12 +201,12 @@ export default function CerberusApp() {
       });
       setSelectedMaster((prev) => (prev && prev.id === id ? { ...prev, decisionAction } : prev));
       try {
-        const res = await fetch(`/api/intelligence/${id}`, {
+        await fetch(`/api/intelligence/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ decisionAction, sellingPrice }),
         });
-        if (!res.ok) await refresh();
+        await refresh();
       } catch (err) {
         clientLog.error("intelligence/update", "Karar güncelleme başarısız", { err: String(err) });
         await refresh();
@@ -202,9 +215,22 @@ export default function CerberusApp() {
     [applyMasterPatch, refresh]
   );
 
-  const handleExportCsv = useCallback(() => {
-    downloadOrdersCsv(filteredOrders, selectedStore);
-  }, [filteredOrders, selectedStore]);
+  const handleExportCsv = useCallback(async () => {
+    setExportingCsv(true);
+    setActionError(null);
+    try {
+      await downloadFilteredOrdersCsv({
+        storeCode: selectedStore,
+        search: deferredSearch,
+        cargo: cargoFilter,
+        batch: batchFilter,
+      });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "CSV dışa aktarımı başarısız oldu.");
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [batchFilter, cargoFilter, deferredSearch, selectedStore]);
 
   if (checkingAuth) {
     return (
@@ -247,7 +273,10 @@ export default function CerberusApp() {
           subtitle={meta.subtitle}
           stores={stores}
           selectedStore={selectedStore}
-          onStoreChange={setSelectedStore}
+          onStoreChange={(storeCode) => {
+            setOrderPage(1);
+            setSelectedStore(storeCode);
+          }}
           storeLocked={isStoreLocked}
           onOpenMobileNav={() => setMobileNavOpen(true)}
           onExportCsv={handleExportCsv}
@@ -270,6 +299,23 @@ export default function CerberusApp() {
                 className="flex items-center gap-1.5 rounded-lg bg-danger/20 px-3 py-1.5 text-[11px] font-bold transition hover:bg-danger/30"
               >
                 <RefreshCw className="h-3 w-3" /> Tekrar dene
+              </button>
+            </div>
+          )}
+
+          {actionError && (
+            <div
+              role="alert"
+              className="flex items-center gap-3 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-[13px] text-danger"
+            >
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{actionError}</span>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="rounded-lg bg-danger/20 px-3 py-1.5 text-[11px] font-bold transition hover:bg-danger/30"
+              >
+                Kapat
               </button>
             </div>
           )}
@@ -316,11 +362,27 @@ export default function CerberusApp() {
               orders={filteredOrders}
               batches={batches}
               searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
+              onSearchChange={(value) => {
+                setSearchQuery(value);
+                setOrderPage(1);
+              }}
               cargoFilter={cargoFilter}
-              onCargoFilterChange={setCargoFilter}
+              onCargoFilterChange={(value) => {
+                setCargoFilter(value);
+                setOrderPage(1);
+              }}
               batchFilter={batchFilter}
-              onBatchFilterChange={setBatchFilter}
+              onBatchFilterChange={(value) => {
+                setBatchFilter(value);
+                setOrderPage(1);
+              }}
+              pagination={orderPagination}
+              onPageChange={setOrderPage}
+              onPageSizeChange={(value) => {
+                setOrderPageSize(value);
+                setOrderPage(1);
+              }}
+              exportingCsv={exportingCsv}
               onExportCsv={handleExportCsv}
               onOpenWarehouse={() => setIsWarehouseReconOpen(true)}
               onSelect={setSelectedOrder}
@@ -355,6 +417,7 @@ export default function CerberusApp() {
             <AdminDashboard
               currentUser={currentUser}
               onStoreSelected={(storeCode: string) => {
+                setOrderPage(1);
                 setSelectedStore(storeCode);
                 setActiveTab("XLS_MASTER");
               }}
@@ -390,6 +453,7 @@ export default function CerberusApp() {
         onCreated={(newOrder: OrderView) => {
           prependOrder(newOrder);
           setSelectedOrder(newOrder);
+          void refresh();
         }}
         currentStore={selectedStore}
       />

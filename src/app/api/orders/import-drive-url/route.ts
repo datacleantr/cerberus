@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { parseBody, driveUrlSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
+import { readResponseBytesWithLimit } from "@/lib/httpSafety";
 
 function extractSpreadsheetId(url: string): string | null {
   const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -63,8 +64,17 @@ export async function POST(req: Request) {
       );
     }
 
-    const arrayBuffer = await fetchResponse.arrayBuffer();
-    const workbook = XLSX.read(arrayBuffer, { type: "array" });
+    // Content-Length eksik/yanlış olabilir; akışı okurken de 20 MB sınırını uygula.
+    let bytes: Uint8Array;
+    try {
+      bytes = await readResponseBytesWithLimit(fetchResponse, 20 * 1024 * 1024);
+    } catch {
+      return NextResponse.json(
+        { error: "Google E-Tablo dosyası çok büyük (üst sınır 20 MB)." },
+        { status: 413 }
+      );
+    }
+    const workbook = XLSX.read(bytes, { type: "array" });
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
 
@@ -122,7 +132,7 @@ export async function POST(req: Request) {
         problemAction: String(cols[25] || "").trim(),
         problemResult: String(cols[26] || "").trim(),
         refundAmount: String(cols[27] || "0").replace(",", "."),
-        creditCard: String(cols[28] || "1753").trim(),
+        creditCard: String(cols[28] || "").trim(),
         isFragile: String(cols[29] || "NO").trim(),
         isMultiPack: String(cols[30] || "NO").trim(),
         isBundle: String(cols[31] || "NO").trim(),

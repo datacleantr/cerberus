@@ -188,6 +188,21 @@ export type TabId =
   | "PROBLEMS"
   | "ADMIN";
 
+export interface OrderPagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  pageCount: number;
+}
+
+export interface OrderQuery {
+  page: number;
+  pageSize: number;
+  search: string;
+  cargo: string;
+  batch: string;
+}
+
 export interface OrderKpis {
   totalOrders: number;
   totalUnits: number;
@@ -219,6 +234,7 @@ export function isProblemOrder(o: OrderView): boolean {
 
 export interface ProductPnlView {
   netRevenue: number;
+  netCost: number;
   netProfit: number;
   roiPercent: number | null;
   lossRatePercent: number;

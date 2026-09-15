@@ -53,11 +53,12 @@ describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", 
     expect(r.reason).toBe("NOTHING_SHIPPED");
   });
 
-  it("iade tutarı brüt gelirden düşülür", () => {
+  it("tedarikçi iadesi geliri değil net maliyeti azaltır", () => {
     const r = computeRealizedRoi([row({ refundAmount: 50 })]);
-    expect(r.realizedRevenue).toBe(150);
-    expect(r.realizedNetProfit).toBe(50);
-    expect(r.realizedRoiPercent).toBe(50);
+    expect(r.realizedRevenue).toBe(200);
+    expect(r.realizedCost).toBe(50);
+    expect(r.realizedNetProfit).toBe(150);
+    expect(r.realizedRoiPercent).toBe(300);
     expect(r.totalRefunds).toBe(50);
   });
 

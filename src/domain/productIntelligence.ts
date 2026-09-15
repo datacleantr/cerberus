@@ -65,7 +65,10 @@ export interface ProductPnlInput {
 }
 
 export interface ProductPnl {
+  /** Bu şemada müşteri satış iadesi tutulmadığı için sevk kaynaklı brüt gelir */
   netRevenue: number;
+  /** Tedarikçinin karta yaptığı refund mahsup edildikten sonraki maliyet */
+  netCost: number;
   netProfit: number;
   roiPercent: number | null;
   /** Satın alınan adetin yüzde kaçı fire oldu */
@@ -91,11 +94,16 @@ export function computeProductPnl(input: ProductPnlInput): ProductPnl {
     totalRefunds,
   } = input;
 
-  const netRevenue = Math.max(0, grossRevenue - totalRefunds);
-  const netProfit = r2(netRevenue - totalCost);
+  // `refundAmount` kilitli sipariş şemasında tedarikçinin ödeme kartına
+  // yaptığı geri ödemedir. Müşteri satış iadesi olmadığı için gelirden değil
+  // maliyetten mahsup edilir.
+  const netRevenue = Math.max(0, grossRevenue);
+  const netCost = Math.max(0, totalCost - totalRefunds);
+  const netProfit = r2(netRevenue - netCost);
 
   const base: ProductPnl = {
     netRevenue: r2(netRevenue),
+    netCost: r2(netCost),
     netProfit,
     roiPercent: null,
     lossRatePercent: unitsPurchased > 0 ? r2((unitsLost / unitsPurchased) * 100) : 0,
@@ -106,9 +114,9 @@ export function computeProductPnl(input: ProductPnlInput): ProductPnl {
 
   if (orderCount === 0) return { ...base, reason: "NO_ORDERS" };
   if (unitsShipped === 0) return { ...base, reason: "NOTHING_SHIPPED" };
-  if (totalCost <= 0) return { ...base, reason: "ZERO_COST" };
+  if (netCost <= 0) return { ...base, reason: "ZERO_COST" };
 
-  return { ...base, roiPercent: r2((netProfit / totalCost) * 100) };
+  return { ...base, roiPercent: r2((netProfit / netCost) * 100) };
 }
 
 // ---------------------------------------------------------------------------

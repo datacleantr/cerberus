@@ -1,97 +1,138 @@
-# CERBERUS — DECISION-CENTRIC COMMERCE OPERATING SYSTEM (v3.0 LOCKED SCHEMA)
+# CERBERUS Commerce OS
 
-> 🔒 **ASIL MİMARİ VE VERİTABANI ANAYASASI:**  
-> Projenin Neon Cloud PostgreSQL veritabanındaki değişmez 8 tablosu (`users`, `stores`, `researchers`, `research_sessions`, `product_masters`, `orders`, `psh_batches`, `audit_logs`), 40-kolonluk Google Drive XLS şeması ve yazılım mimarisi **[`ARCHITECTURE_AND_DATABASE_SPEC.md`](./ARCHITECTURE_AND_DATABASE_SPEC.md)** dosyasında kilitlenmiştir.
+CERBERUS; çok mağazalı satın alma, ürün araştırma, sipariş/PSH operasyonu, gerçekleşen kârlılık ve karar desteğini aynı uygulamada yöneten bir Next.js + PostgreSQL sistemidir.
 
----
+> **Entegrasyon durumu:** Amazon SP-API bağlı değildir. Keepa yalnız `KEEPA_API_KEY` tanımlandığında gerçek API'yi kullanır. Python Scrapling servisi opsiyoneldir. UI bu bağlantıları bağlıymış gibi göstermemelidir.
 
-## 🏛️ Mimari Katmanlar (Kaynak A + Kaynak B Birleşimi)
+## İş akışı
 
 ```text
-DISCOVER → UNDERSTAND → NORMALIZE → MATCH/DEDUP → ANALYZE → SCORE → RISK + CONFIDENCE → DECIDE → APPROVE → BUY → RECEIVE → LIST → SELL → MEASURE → RECONCILE → LEARN → BETTER DECISION
+DISCOVER → NORMALIZE → ANALYZE → DECIDE → BUY → RECEIVE → LIST → SELL → RECONCILE → LEARN
 ```
 
-1. **Yönetici Sabah Brifingi (Morning Briefing) & İş Sağlığı Skoru (0–100):**
-   - `WHAT CHANGED?` • `WHAT MATTERS?` • `WHAT SHOULD I DO?`
-   - Konsolide ciro, Landed-Cost ayarlı ROI ve FBA sevk oranı.
-   - **Tüm maddeler canlı SQL agregasyonundan üretilir** (`src/domain/briefing.ts`);
-     sabit kodlanmış demo cümlesi yoktur. Veri yoksa madde üretilmez.
-   - İş Sağlığı Skoru **5 eksenli ve açıklanabilirdir** (kârlılık %30, FBA sevk %22,
-     fire %20, veri tazeliği %15, nakit sızıntısı %13); skora tıklayınca kırılım açılır.
-   - ⚠️ **Amazon SP-API entegrasyonu henüz yapılmamıştır.** Admin panelindeki
-     entegrasyon ekranı bunu dürüstçe "BAĞLI DEĞİL" olarak gösterir.
-2. **Product Master Decision Vault (`Product ≠ Listing`):**
-   - Karar Motoru: `BUY | TEST | WAIT | REJECT | REPRICE | REORDER | PAUSE | LIQUIDATE`
-   - Veri Tazeliği: `FRESH | AGING | STALE | EXPIRED`
-   - Veri Kalitesi: `VALID | INVALID | CONFLICTING`
-   - 6-Eksenli Hexagonal SVG Yapay Zeka Radarı (`PROFITABILITY`, `DEMAND`, `COMPETITION`, `PRICE STABILITY`, `SUPPLIER RELIABILITY`, `OPERATIONAL RISK`)
-   - AI Kanıt Zinciri (`Evidence Chain` - Kaynak, gözlem tarihi, güven yüzdesi)
-   - Tahmini ROI vs Gerçekleşen ROI (`Actual vs Estimated Profitability Engine`)
-3. **10 Kişilik ABD Sourcing Ekibi Zekâsı (`Quality-Adjusted Researcher Score`):**
-   - Bulunan Ürün → Onaylanan → Satın Alınan → Kâr Üreten Ürün + Fire Oranı.
-4. **40 Kolonluk Google Drive XLS Siparişleri + Çoklu Kaynak Excel İçe Aktarıcı (KİLİTLİ ŞEMA):**
-   - 38 gerçek The Vitamin Shoppe siparişi (`WO110074776`, `WO310759607`...)
-   - **Bilgisayardan `.xlsx` / `.xls` / `.csv` Sürükle & Bırak:** SheetJS kütüphanesi dosyayı tarayıcıda okur ve 40 kolonu otomatik haritalar.
-   - **Google Drive E-Tablo Linki Çekme:** Paylaşım linkini (`https://docs.google.com/spreadsheets/d/...`) yapıştırıp doğrudan sunucu üzerinden içe aktarma.
-   - **Excel Tarzı Hücre Düzenleyici Önizleme Tablosu:** Kaydetmeden önce satırları, birim maliyeti, ASIN ve kargo durumunu Excel hücresi gibi tıklayıp düzeltebilme.
-   - Tek tıkla **CSV Export (`.csv`)**.
-5. **PSH Envanter & Batch Partileri Modülü:**
-   - Ön-envanter sevkiyat partileri (`PSH-BATCH-2026-01`, `PSH-BATCH-2026-02`).
-6. **Depo Karşılama & Sayım (Order No Eşleştirme & P1–P4 Fire):**
-   - Gelen kutulardaki Order No'yu eşleştirip `P1 İptal`, `P2 Eksik`, `P3 Defolu`, `P4 Tarihi Geçmiş` kaydı.
-7. **Inventory Lab & Amazon Muhasebesi:**
-   - Birim alış, satış fiyatı, kâr ve net ROI.
-8. **Admin Komuta Merkezi & Veritabanı Temizleme/Sıfırlama Paneli (Zero Trust RBAC):**
-   - `ADMIN` (Tüm Mağazalar) vs `STORE_USER` (`HRN`, `SEL`, `MK` İzole Mağazalar).
-   - **Mağaza Yönetimi (Stores CRUD)**: 26 Mağaza tanımı, aktif/pasif, varsayılan kart ve e-posta yönetimi.
-   - **Kullanıcı Yönetimi (Users & RBAC)**: Personel ekleme, şifre belirleme, mağaza izolasyon ataması.
-   - **Siparişler Yönetimi & Satır Silme (Orders CRUD)**: Tüm mağazaların siparişlerini süzme ve tek tek silme.
-   - **🧹 Veritabanı Temizleme & Sıfırlama Araçları (DANGER ZONE)**:
-     - `RESET-CERBERUS` güvenlik onayıyla çalışır ve **yalnızca geliştirme ortamında** aktiftir (üretimde 404 döner, T0.2).
-     - **1. Sadece Siparişleri Temizle (Kullanıcılar & Mağazalar Kalır):** Kendi gerçek Excel/Drive verilerinizi yüklemek için sipariş ve batch tablolarını sıfırlar; kullanıcı ve mağaza ayarlarını korur.
-     - **2. 38 Gerçek XLS Siparişi Geri Yükle:** 40-kolonluk referans verisini dilediğinizde tek tıkla geri getirir.
-     - **3. Fabrika Ayarlarına Dön:** Sadece Süper Admin hesabını bırakıp tüm tabloları boşaltır.
+Başlıca modüller:
 
-### 🧭 Admin Dashboard'a Giriş Yapmanın 3 Kolay Yolu:
-1. **Giriş Ekranından:** `/login` sayfasında **Ahmet Erdem (Sistem Yöneticisi)** butonuna tıklayın veya `ahmet@cerberus-commerce.io` ve size verilen parola ile giriş yapın → Sistem sizi doğrudan Admin Dashboard'una açar.
-2. **Üst Menüdeki Butondan:** Sayfanın en üstünde yer alan mor/indigo renkli **[ 🛡️ Admin Paneli ]** butonuna tıklayın.
-3. **Doğrudan URL ile:** Tarayıcı adres çubuğuna doğrudan `https://.../admin` yazın.
+- ürün zekâsı, karar kuyruğu ve kanıt zinciri;
+- mağaza kapsamlı sipariş arama, filtreleme, sayfalama ve CSV dışa aktarma;
+- XLS/XLSX/CSV önizleme ve kontrollü içe aktarma;
+- PSH batch oluşturma, depo sayımı ve P1–P4 fire takibi;
+- gerçekleşen ROI, operasyon analitiği ve yönetici brifingi;
+- mağaza, kullanıcı ve ayar yönetimi;
+- audit log, readiness/liveness ve veri saklama araçları.
 
----
+Finansal sözleşme: `refundAmount`, tedarikçinin ödeme kartına yaptığı geri ödemedir. Bu nedenle satış gelirini düşürmez; etkin maliyet `max(0, totalCost - supplierRefund)` olarak hesaplanır.
 
-## 🔐 Kimlik Doğrulama ve Güvenlik (2026-09 Güvenlik Sertleştirmesi)
+## Teknik mimari
 
-> Önceki sürümde README'de yayınlanan demo parolaları **kalıcı olarak iptal edilmiştir** (Audit F-03/F-04).
+- **Web/API:** Next.js 16 App Router, React 19, TypeScript
+- **Veri:** PostgreSQL, Drizzle ORM ve versiyonlu SQL migration'ları
+- **Doğrulama:** Zod tabanlı, byte sınırı olan JSON parser
+- **Kimlik:** bcrypt parola + imzalı HttpOnly JWT; rol/parola değişiklikleri canlı DB doğrulamasıyla mevcut oturumlara hemen uygulanır
+- **Test:** Vitest ve PGlite
+- **Gözlemlenebilirlik:** yapılandırılmış log, `/api/health`, `/api/health/ready`
 
-- **Parolalar bcrypt ile saklanır** (`bcryptjs`, cost 12); düz metin parola kabul edilmez.
-- **Oturumlar imzalı JWT**'dir (`jose` HS256, 8 saat) — çerez kurcalanamaz.
-- **İlk kurulum parolaları** `SEED_ADMIN_PASSWORD` / `SEED_STORE_PASSWORD` ortam değişkenlerinden alınır (üretimde zorunlu, min 12 karakter). Tanımlanmazsa varsayılan hesaplar oluşturulmaz.
-- **Login hız sınırlama:** IP+hesap başına 5 deneme/15 dk.
-- Kullanıcı ekleme/parola sıfırlama Admin Paneli → Kullanıcı Yönetimi üzerinden yapılır (min 12 karakter).
+Temel veri varlıkları `users`, `stores`, `products`, `product_masters`, `supplier_offers`, `product_lifecycle_events`, `researchers`, `research_sessions`, `orders`, `psh_batches`, `audit_logs`, `app_settings` ve crawler tablolarıdır. Şema için tek kaynak [`src/db/schema.ts`](./src/db/schema.ts), değişim geçmişi için `drizzle/` klasörüdür. Eski “kilitli 8 tablo” dokümanları güncel runtime sözleşmesi değildir.
 
-| Kullanıcı | E-posta | Rol | Mağaza Kapsamı |
-|---|---|---|---|
-| **Ahmet Erdem** | `ahmet@cerberus-commerce.io` | `ADMIN` | Tüm Mağazalar |
-| **Harun** | `harun@cerberus-commerce.io` | `STORE_USER` | Yalnızca HRN |
-| **Selin Yılmaz** | `selin@cerberus-commerce.io` | `STORE_USER` | Yalnızca SEL |
-| **Can Demir** | `can@cerberus-commerce.io` | `STORE_USER` | Yalnızca MK |
+## Roller ve mağaza izolasyonu
 
----
+| Rol | Kapsam |
+|---|---|
+| `ADMIN` | Kullanıcı yönetimi dahil tüm mağazalar ve yönetim işlemleri |
+| `MANAGER` | Operasyonel yönetim; kullanıcı yönetimi ve legacy generic silme yetkisi yok |
+| `STORE_USER` | Yalnız kendi `storeCode` kapsamındaki operasyon verisi |
 
-## ⚡ Canlıya Alma (Vercel + Neon)
+Mağaza kapsamı yalnız UI filtresine bırakılmaz; API guard'ları istemciden gelen yabancı `storeCode` değerini mağaza kullanıcısının oturum kapsamına kilitler. Kart ve e-posta gibi alanlar rol bazında maskelenir.
 
-1. Ortam değişkenlerini tanımlayın (ZORUNLU — bk. `.env.example`): `DATABASE_URL`, `SESSION_SECRET` (min 32 kr.), `SEED_ADMIN_PASSWORD`, `SEED_STORE_PASSWORD` (min 12 kr.)
-2. Projeyi GitHub'a pushlayın (`allinone-code/allinone-saas`).
-3. Neon veritabanında şemayı kurun ve başlangıç verisini yükleyin (T2.1/T2.4):
-   ```bash
-   export DATABASE_URL="your-neon-pooled-connection-string"
-   npm run db:migrate   # versiyonlu migration'lar (drizzle/ klasörü)
-   npm run db:seed      # tek seferlik kullanıcı + referans verisi
-   ```
-   > Not: `db:push` yalnızca lokal geliştirme ve mevcut kurulumlarda TEK SEFERLİK
-   > şema eşitlemesi içindir; yeni değişiklikler `npm run db:generate` ile
-   > migration olarak üretilir ve commit edilir.
-   > Mevcut Neon kurulumlarında FK/unique eklerken hata alırsanız önce mükerrer
-   > kontrolü yapın:
-   > `SELECT order_number, buyer_store, count(*) FROM orders GROUP BY 1,2 HAVING count(*)>1;`
-4. Vercel'de **Redeploy** çalıştırın.
+## Yerel kurulum
+
+Gereksinimler: Node.js 22 ve PostgreSQL.
+
+```bash
+npm ci
+cp .env.example .env.local
+```
+
+En az şu değerleri tanımlayın:
+
+```dotenv
+DATABASE_URL=postgresql://...
+SESSION_SECRET=en-az-32-karakter-rastgele-bir-deger
+SEED_ADMIN_PASSWORD=en-az-12-karakter
+SEED_STORE_PASSWORD=en-az-12-karakter
+```
+
+Ardından:
+
+```bash
+npm run db:migrate
+npm run db:seed
+npm run dev
+```
+
+Geliştirme sunucusu varsayılan olarak `http://localhost:3000` üzerinde açılır. Yayınlanmış demo parolaları iptal edilmiştir; seed parolaları yalnız environment üzerinden alınır. Üretimde parola env'i yoksa varsayılan hesap oluşturulmaz.
+
+### Fixture gerçeği
+
+Depodaki geliştirme fixture'ı **24 sipariş** ve **4 başlangıç mağazası** içerir. Fixture canlı/müşteri verisi değildir. `/api/admin/database-reset` yalnız production dışı ortamda, `ADMIN` rolü ve `RESET-CERBERUS` onayıyla çalışır.
+
+## İçe ve dışa aktarma
+
+- Tarayıcı `.xlsx`, `.xls` ve `.csv` dosyalarını önizler; server write yolu satırları tekrar doğrular.
+- Google Drive indirmeleri izinli URL politikası ve 20 MB gerçek stream sınırı kullanır.
+- Sipariş CSV export'u aktif server filtrelerinin tüm sonucunu chunk'lar hâlinde üretir; 10.000 kaydı aşan sonuç sessizce kesilmez, `422` döner.
+- Store kullanıcılarında hassas alanlar export sırasında da maskelenir.
+
+### XLSX bağımlılık kaynağı
+
+npm registry'deki tarihsel `xlsx` paketi yerine API uyumlu `@e965/xlsx@0.20.3`, yeniden üretilebilir kurulum için [`vendor/e965-xlsx-0.20.3.tgz`](./vendor/e965-xlsx-0.20.3.tgz) olarak vendored edilmiştir.
+
+- SHA-256: `f93cd23533d5356f34d4b24ea48431f8cf8945d1ae1bd2045ab5d92163c82bb2`
+- Kaynak bir **üçüncü taraf yeniden paketlemesidir**; SheetJS'in resmî dağıtımı değildir.
+- Paket yükseltmesinde kaynak, lisans, checksum, runtime API testi ve `npm audit` yeniden doğrulanmalıdır.
+
+## Crawler
+
+Node crawler her redirect hop'unda URL/DNS/IP kontrolü yapar ve HTML'i 3 MB ile sınırlar. İsteğe bağlı Python browser servisi anti-bot fallback'i sağlar.
+
+```dotenv
+SCRAPLING_SERVICE_URL=https://crawler.example.internal
+SCRAPLING_SERVICE_TOKEN=en-az-32-karakter-ortak-sir
+CRAWLER_ALLOWED_HOSTS=vitaminshoppe.com,example-supplier.com
+```
+
+Python servisi için [`services/scrapling/README.md`](./services/scrapling/README.md) dosyasına bakın. Mikro-servisi yalnız shared-token'a güvenerek açık internete koymayın; private network ve platform rate limit'i de kullanın.
+
+## Kalite kapısı
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm audit --omit=dev --audit-level=high
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ci_placeholder \
+SESSION_SECRET=ci-only-build-secret-min-32-characters!! \
+npm run build
+python3 -m py_compile services/scrapling/main.py
+```
+
+Migration manifest testi, readiness'in beklediği migration sayısı ve son SQL SHA-256 değerinin Drizzle journal ile uyumunu denetler.
+
+## Üretime alma
+
+1. Managed PostgreSQL'i ve gerekli environment değerlerini hazırlayın.
+2. Uygulama sürümü deploy edilmeden önce veya ayrı release job'ında `npm run db:migrate` çalıştırın.
+3. İlk kurulumsa güçlü bootstrap parolalarıyla `npm run db:seed` çalıştırın; sonrasında seed'i rutin deploy adımı yapmayın.
+4. Uygulamayı deploy edin.
+5. `/api/health` liveness ve `/api/health/ready` readiness uçlarını platform probe'larına bağlayın.
+6. Readiness'in `200` döndüğünü; migration head, session secret, başlangıç kullanıcı/mağaza kayıtları ve order-product bütünlüğü kontrollerini geçtiğini doğrulayın.
+7. Backup/PITR, alarm, log saklama ve geri dönüş prosedürünü sağlayıcı tarafında etkinleştirin.
+
+`db:push` yalnız lokal geliştirme/tek seferlik kontrollü eşitleme içindir; üretim değişiklikleri commit edilmiş migration ile yapılır.
+
+## API ve ek dokümanlar
+
+- OpenAPI: [`docs/openapi.yaml`](./docs/openapi.yaml)
+- Mimari yönlendirme: [`ARCHITECTURE_AND_DATABASE_SPEC.md`](./ARCHITECTURE_AND_DATABASE_SPEC.md)
+- Operasyon/audit notları: [`docs/audit/`](./docs/audit/)
+
+OpenAPI dosyası çekirdek dış API sözleşmesini belgeler; Next.js route implementasyonu ve Zod şemaları davranış için nihai kaynaktır.

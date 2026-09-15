@@ -105,7 +105,7 @@ export default function AdminPage() {
               {currentUser?.name || "Ahmet Erdem"}
             </span>
             <span className="text-[10px] font-mono-tech text-brand-soft font-bold block">
-              SİSTEM YÖNETİCİSİ (ADMIN)
+              {currentUser?.role === "ADMIN" ? "SİSTEM YÖNETİCİSİ" : "OPERASYON YÖNETİCİSİ"}
             </span>
           </div>
 

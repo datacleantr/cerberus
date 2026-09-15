@@ -35,7 +35,7 @@ export const stores = pgTable("stores", {
   buyerName: text("buyer_name").notNull().default("Harun"),
   currency: text("currency").notNull().default("USD"),
   status: text("status").notNull().default("ACTIVE"), // 'ACTIVE' | 'PASSIVE'
-  defaultCard: text("default_card").default("1753"),
+  defaultCard: text("default_card"),
   defaultEmail: text("default_email"),
   notes: text("notes"),
   accountHealthScore: integer("account_health_score").notNull().default(98),
@@ -384,7 +384,7 @@ export const orders = pgTable(
   refundAmount: numeric("refund_amount", { precision: 10, scale: 2 }).notNull().default("0.00"), // 28. Refund miktarı (R kodlu)
 
   // Kolon 29-35: Kredi Kartı ve Ürün Nitelikleri
-  creditCard: text("credit_card").default("1753"), // 29. Kredi Kartı son 4 hane
+  creditCard: text("credit_card"), // 29. Kredi Kartı son 4 hane; bilinmiyorsa null/boş
   isFragile: text("is_fragile").notNull().default("NO"), // 30. Fragile (YES/NO)
   isMultiPack: text("is_multipack").notNull().default("NO"), // 31. MultiPack (YES/NO)
   isBundle: text("is_bundle").notNull().default("NO"), // 32. Bundle (YES/NO)

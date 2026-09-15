@@ -1,14 +1,29 @@
 openapi: 3.0.3
 info:
-  title: CERBERUS Commerce OS — API Sözleşmesi (T3.5 + Arbitraj V2)
-  version: "4.0-arbitraj-v2"
+  title: CERBERUS Commerce OS API
+  version: "4.1-production-readiness"
   description: >
-    Tüm uçlar `cerberus_session` imzalı JWT çerezi ile korunur (açık uçlar: /api/auth/login, /api/health).
-    Kimliksiz istek 401; rol/storeCode ihlali 403; doğrulama hatası 422; sunucu hatası 500 + correlationId döner.
-    V2 ekleri: Crawler (Scrapling-hybrid), Keepa (BSR/Keepa), Analitik, Ayarlar.
+    Çekirdek route-handler sözleşmesi. Uçlar varsayılan olarak HttpOnly
+    `cerberus_session` JWT çereziyle korunur. Açık uçlar `/api/auth/login`,
+    `/api/health` ve `/api/health/ready` olarak security alanında ayrıca işaretlenir.
+    Kimliksiz/geçersiz oturum 401, rol veya mağaza kapsamı ihlali 403, body
+    doğrulama hatası 422, aşırı gövde 413 ve beklenmeyen sunucu hatası
+    correlationId ile 500 döner. STORE_USER için mağaza kapsamı sunucuda zorlanır.
 servers:
   - url: /
-tags: [auth, orders, intelligence, batches, admin, system, crawler, keepa, analytics, settings]
+security:
+  - cookieAuth: []
+tags:
+  - { name: auth, description: Kimlik doğrulama ve oturum }
+  - { name: orders, description: "Sipariş, import ve export" }
+  - { name: intelligence, description: Ürün zekâsı ve karar kasası }
+  - { name: batches, description: PSH batch operasyonları }
+  - { name: admin, description: Yetkili yönetim işlemleri }
+  - { name: system, description: Liveness ve readiness }
+  - { name: crawler, description: Mağaza kapsamlı kaynak tarama }
+  - { name: keepa, description: Keepa analizi ve cache }
+  - { name: analytics, description: Karar destek analitiği }
+  - { name: settings, description: Uygulama ayarları }
 
 paths:
   /api/health:
@@ -19,6 +34,18 @@ paths:
       responses:
         "200": { description: healthy }
         "500": { description: unhealthy (detay yalnızca sunucu logunda) }
+
+  /api/health/ready:
+    get:
+      tags: [system]
+      summary: Trafik kabulü için derin readiness kontrolü
+      description: >
+        DB erişimi, SESSION_SECRET, beklenen migration sayısı ve head hash'i,
+        başlangıç kullanıcı/mağaza kayıtları ile order-product bütünlüğünü denetler.
+      security: []
+      responses:
+        "200": { description: Tüm readiness kontrolleri başarılı }
+        "503": { description: En az bir readiness kontrolü başarısız }
 
   /api/auth/login:
     post:
@@ -36,7 +63,7 @@ paths:
                 email: { type: string, format: email, maxLength: 254 }
                 password: { type: string, minLength: 1, maxLength: 128 }
       responses:
-        "200": { description: "success + kullanıcı özeti; Set-Cookie: cerberus_session (httpOnly, 8s)" }
+        "200": { description: "success + kullanıcı özeti; Set-Cookie: cerberus_session (HttpOnly, SameSite=Lax, 8 saat)" }
         "401": { description: "E-posta/parola hatalı veya iptal edilmiş parola" }
         "422": { description: "Zod doğrulama hatası" }
         "429": { description: "Rate limit; Retry-After başlığı" }
@@ -63,10 +90,11 @@ paths:
         - { name: storeCode, in: query, schema: { type: string } , description: "STORE_USER için yok sayılır (F-11)" }
         - { name: cargoStatus, in: query, schema: { type: string } }
         - { name: pshBatchNo, in: query, schema: { type: string } }
+        - { name: search, in: query, description: "Sipariş no, ASIN, MSKU, ürün, marka, tedarikçi ve e-posta içinde arar; ilk 120 karakter kullanılır", schema: { type: string, maxLength: 120 } }
         - { name: page, in: query, schema: { type: integer, default: 1, minimum: 1 } }
-        - { name: pageSize, in: query, schema: { type: integer, default: 200, maximum: 2000 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
       responses:
-        "200": { description: "orders, stores, batches, auditLogs, users(güvenli), kpis, pagination" }
+        "200": { description: "Maskelenmiş orders sayfası, mağaza kapsamlı metadata, filtrelenmiş tüm kümenin kpis değeri ve pagination {page,pageSize,total,pageCount}" }
         "401": { description: Oturum gerekli }
     post:
       tags: [orders]
@@ -75,6 +103,32 @@ paths:
         "200": { description: "message + order" }
         "401": { description: Oturum gerekli }
         "422": { description: Doğrulama hatası }
+
+  /api/orders/export:
+    get:
+      tags: [orders]
+      summary: Filtrelenmiş siparişlerin tamamını CSV stream olarak indir
+      description: >
+        GET /api/orders ile aynı storeCode, cargoStatus, pshBatchNo ve search
+        filtrelerini kullanır. STORE_USER kapsamı ve hassas alan maskelemesi export'ta
+        da uygulanır. 250 satırlık parçalarla üretilir; 10.000 satır sessizce kesilmez.
+      parameters:
+        - { name: storeCode, in: query, schema: { type: string } }
+        - { name: cargoStatus, in: query, schema: { type: string } }
+        - { name: pshBatchNo, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string, maxLength: 120 } }
+      responses:
+        "200":
+          description: UTF-8 BOM içeren 40 kolon CSV stream
+          headers:
+            X-Export-Row-Count:
+              schema: { type: integer }
+              description: Export edilen satır sayısı
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        "401": { description: Oturum gerekli }
+        "422": { description: Filtre sonucu 10.000 satırdan fazla; filtreyi daraltın }
 
   /api/orders/summary:
     get:
@@ -131,7 +185,7 @@ paths:
       tags: [intelligence]
       summary: Product Master vault + araştırmacı skorları + sabah brifingi
       responses:
-        "200": { description: productMasters, researchers, researchSessions, morningBriefing }
+        "200": { description: "productMasters, researchers, researchSessions ve morningBriefing" }
         "401": { description: Oturum gerekli }
     post:
       tags: [intelligence]
@@ -166,7 +220,8 @@ paths:
       responses:
         "200": { description: "message + batch" }
         "401": { description: Oturum gerekli }
-        "422": { description: Doğrulama hatası }
+        "409": { description: Batch numarası/atama yarış çakışması veya sipariş zaten başka batch'te }
+        "422": { description: Doğrulama ya da mağaza/batch invariant hatası }
 
   /api/admin/users:
     get:
@@ -192,9 +247,10 @@ paths:
   /api/admin/stores:
     get:
       tags: [admin]
-      summary: Mağaza listesi + canlı istatistik (giriş yapmış herkes)
+      summary: Mağaza listesi + canlı istatistik
+      description: STORE_USER yalnız kendi mağazasını; ADMIN/MANAGER tüm mağazaları görür. Hassas kart/e-posta alanları yalnız ADMIN'e açıktır.
       responses:
-        "200": { description: stores }
+        "200": { description: Mağaza kapsamlı ve rol bazında maskelenmiş stores }
         "401": { description: Oturum gerekli }
     post:
       tags: [admin]
@@ -213,32 +269,58 @@ paths:
   /api/admin/master-crud:
     delete:
       tags: [admin]
-      summary: Satır silme (ADMIN/MANAGER; audit_logs tablosu kapalı — F-09)
+      summary: Legacy admin ekranından tek sipariş silme
+      description: >
+        Generic tablo silme davranışı kaldırılmıştır. Yalnız ADMIN, yalnız `orders`
+        ve pozitif tek `id` kabul edilir. Silme ve ORDER_DELETED audit kaydı aynı
+        transaction içinde gerçekleşir.
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [tableName, id]
+              additionalProperties: false
               properties:
-                tableName: { type: string, enum: [orders, users, stores, pshBatches, productMasters] }
-                id: { type: integer }
-                storeCodeFilter: { type: string }
+                tableName: { type: string, enum: [orders] }
+                id: { type: integer, minimum: 1 }
       responses:
-        "200": { description: silindi }
-        "403": { description: "auditLog silme engeli / yetki" }
+        "200": { description: Sipariş silindi ve denetim izine kaydedildi }
+        "401": { description: Oturum gerekli }
+        "403": { description: Yalnız ADMIN }
+        "404": { description: Sipariş bulunamadı }
+        "422": { description: Doğrulama hatası }
 
   /api/admin/database-reset:
     post:
       tags: [admin]
-      summary: "Yıkıcı sıfırlama araçları — YALNIZCA geliştirme ortamı (üretimde 404), ADMIN + RESET-CERBERUS onayı"
+      summary: "Yıkıcı sıfırlama araçları — yalnız production dışı ortam"
+      description: ADMIN ve `RESET-CERBERUS` onayı gerekir; FK sıralı transaction kullanır.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [actionType, confirmationCode]
+              additionalProperties: false
+              properties:
+                actionType:
+                  type: string
+                  enum: [CLEAN_ORDERS_ONLY, RESTORE_REAL_XLS, FRESH_START_REAL_DATA, NUKE_ALL_KEEP_ADMIN]
+                confirmationCode: { type: string, enum: [RESET-CERBERUS] }
       responses:
-        "200": { description: başarılı }
-        "404": { description: Üretimde kapalı }
+        "200": { description: İşlem transaction içinde başarılı }
+        "401": { description: Oturum gerekli }
+        "403": { description: Yalnız ADMIN }
+        "404": { description: Production ortamında endpoint kapalı }
+        "422": { description: Doğrulama hatası }
 
   /api/crawler/scrape:
     post:
       tags: [crawler]
-      summary: "Kaynak URL'i çek (Scrapling-hybrid stealth) — vitaminshoppe.com + generic JSON-LD, 6 saat cache"
+      summary: "Tek kaynak URL'i çek — mağaza kapsamlı 6 saat cache, kullanıcı başına 5 istek/dakika"
       requestBody:
         required: true
         content:
@@ -249,11 +331,12 @@ paths:
               properties:
                 url: { type: string, format: uri, maxLength: 2000, example: "https://www.vitaminshoppe.com/p/..." }
                 storeCode: { type: string, maxLength: 32 }
-                maxPages: { type: integer, minimum: 1, maximum: 3 }
       responses:
         "200": { description: "jobId, sourceDomain, products[], warnings, cached, fetchedAt, isListingPage" }
         "401": { description: Oturum gerekli }
+        "413": { description: Kaynak HTML güvenlik sınırını aşıyor }
         "422": { description: "Sayfadan ürün çıkarılamadı — tek ürün sayfası deneyin" }
+        "429": { description: "Kullanıcı başına 5/dakika sınırı; Retry-After: 60" }
         "502": { description: "Site hatası / timeout / bot koruması" }
 
   /api/crawler/import:
@@ -346,3 +429,25 @@ paths:
         "400": { description: "reject >= test veya anahtar çok kısa" }
         "401": { description: Oturum gerekli }
         "403": { description: Yetki yetersiz }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: cerberus_session
+      description: HttpOnly, imzalı ve süreli JWT oturum çerezi
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        correlationId: { type: string }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }

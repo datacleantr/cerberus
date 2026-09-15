@@ -19,6 +19,8 @@ describe("Analytics — Karar Destek", () => {
     expect(k.totalShipped).toBe(2);
     expect(k.p1).toBe(1);
     expect(k.totalRefunds).toBe(5);
+    // Tedarikçi iadesi maliyeti mahsup eder: $50 gelir - ($35 - $5) = $20.
+    expect(k.grossProfit).toBe(20);
     expect(k.problemRate).toBe(50);
   });
 

@@ -35,7 +35,7 @@ export function NewOrderModal({
   const [sellingPrice, setSellingPrice] = useState("65.00");
   const [orderEmail, setOrderEmail] = useState("heyberus@gmail.com");
   const [cargoStatus, setCargoStatus] = useState("Tam Geldi");
-  const [creditCard, setCreditCard] = useState("1753");
+  const [creditCard, setCreditCard] = useState("");
   const [periodCode, setPeriodCode] = useState("Ş26");
   const [submitting, setSubmitting] = useState(false);
 

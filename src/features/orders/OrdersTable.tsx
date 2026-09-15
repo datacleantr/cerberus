@@ -1,7 +1,7 @@
 "use client";
 
-import { Download, ExternalLink, PackageCheck, Search } from "lucide-react";
-import type { BatchView, OrderView } from "../types";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, PackageCheck, Search } from "lucide-react";
+import type { BatchView, OrderPagination, OrderView } from "../types";
 
 export function OrdersTable({
   orders,
@@ -12,6 +12,10 @@ export function OrdersTable({
   onCargoFilterChange,
   batchFilter,
   onBatchFilterChange,
+  pagination,
+  onPageChange,
+  onPageSizeChange,
+  exportingCsv,
   onExportCsv,
   onOpenWarehouse,
   onSelect,
@@ -24,6 +28,10 @@ export function OrdersTable({
   onCargoFilterChange: (v: string) => void;
   batchFilter: string;
   onBatchFilterChange: (v: string) => void;
+  pagination: OrderPagination;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+  exportingCsv: boolean;
   onExportCsv: () => void;
   onOpenWarehouse: () => void;
   onSelect: (order: OrderView) => void;
@@ -34,7 +42,8 @@ export function OrdersTable({
         <div className="relative flex-1 min-w-[280px]">
           <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-3" />
           <input
-            type="text"
+            type="search"
+            aria-label="Siparişlerde ara"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Order No, ASIN, MSKU, ürün adı veya sipariş maili ara..."
@@ -44,6 +53,7 @@ export function OrdersTable({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <select
+            aria-label="Kargo durumuna göre filtrele"
             value={cargoFilter}
             onChange={(e) => onCargoFilterChange(e.target.value)}
             className="bg-surface-base border border-line rounded-xl px-3 py-2 text-xs font-mono-tech text-ink"
@@ -56,6 +66,7 @@ export function OrdersTable({
           </select>
 
           <select
+            aria-label="PSH batch'e göre filtrele"
             value={batchFilter}
             onChange={(e) => onBatchFilterChange(e.target.value)}
             className="bg-surface-base border border-line rounded-xl px-3 py-2 text-xs font-mono-tech text-ink"
@@ -70,9 +81,11 @@ export function OrdersTable({
 
           <button
             onClick={onExportCsv}
-            className="px-3.5 py-2 bg-surface-3 hover:bg-surface-3 border border-line text-info rounded-xl text-xs font-mono-tech font-bold transition flex items-center gap-1.5"
+            disabled={exportingCsv}
+            className="px-3.5 py-2 bg-surface-3 hover:bg-surface-3 border border-line text-info rounded-xl text-xs font-mono-tech font-bold transition flex items-center gap-1.5 disabled:cursor-wait disabled:opacity-50"
           >
-            <Download className="w-3.5 h-3.5" /> CSV İndir
+            <Download className="w-3.5 h-3.5" />
+            {exportingCsv ? "CSV hazırlanıyor…" : "Filtrelenmiş CSV'yi İndir"}
           </button>
 
           <button
@@ -251,6 +264,55 @@ export function OrdersTable({
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-line bg-surface-base px-4 py-3 text-xs font-mono-tech text-ink-muted sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            {pagination.total === 0
+              ? "Kayıt yok"
+              : `${(pagination.page - 1) * pagination.pageSize + 1}–${Math.min(
+                  pagination.page * pagination.pageSize,
+                  pagination.total
+                )} / ${pagination.total} kayıt`}
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="orders-page-size" className="text-[11px] text-ink-faint">
+              Sayfa başına
+            </label>
+            <select
+              id="orders-page-size"
+              value={pagination.pageSize}
+              onChange={(event) => onPageSizeChange(Number(event.target.value))}
+              className="rounded-lg border border-line bg-surface-1 px-2 py-1.5 text-ink"
+            >
+              {[25, 50, 100, 200].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              aria-label="Önceki sayfa"
+              disabled={pagination.page <= 1}
+              onClick={() => onPageChange(pagination.page - 1)}
+              className="rounded-lg border border-line p-1.5 text-ink transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="min-w-20 text-center text-ink">
+              {pagination.pageCount === 0 ? 0 : pagination.page} / {pagination.pageCount}
+            </span>
+            <button
+              type="button"
+              aria-label="Sonraki sayfa"
+              disabled={pagination.pageCount === 0 || pagination.page >= pagination.pageCount}
+              onClick={() => onPageChange(pagination.page + 1)}
+              className="rounded-lg border border-line p-1.5 text-ink transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

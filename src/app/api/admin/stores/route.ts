@@ -4,37 +4,52 @@ import { stores, auditLogs, orders } from "@/db/schema";
 import { requireUser, requireRole, isDenied } from "@/lib/guards";
 import { parseBody, storeCreateSchema, storeUpdateSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
-import { desc, eq, count, sum } from "drizzle-orm";
+import { maskCreditCard, maskEmail } from "@/lib/privacy";
+import { eq, count, sum } from "drizzle-orm";
 
 export async function GET() {
   try {
-    // Giriş yapmış herkes mağaza listesini okuyabilir; yönetim yazma işlemleri ADMIN/MANAGER ister
     const gate = await requireUser();
     if (isDenied(gate)) return gate.response;
+    const user = gate.user;
 
-    const allStores = await db.select().from(stores).orderBy(stores.storeCode);
+    // STORE_USER yalnız kendi mağazasını görür. Eski uygulama tüm mağazaların
+    // iletişim/kart metadata'sını ve harcama toplamlarını açığa çıkarıyordu.
+    const storeQuery = db.select().from(stores);
+    const scopedStores =
+      user.role === "STORE_USER"
+        ? await storeQuery.where(eq(stores.storeCode, user.storeCode)).orderBy(stores.storeCode)
+        : await storeQuery.orderBy(stores.storeCode);
 
-    // Compute live order count and spend for each store from orders table
-    const storeStats = await Promise.all(
-      allStores.map(async (st) => {
-        const orderSummary = await db
-          .select({
-            orderCount: count(),
-            totalSpend: sum(orders.totalCost),
-          })
-          .from(orders)
-          .where(eq(orders.buyerStore, st.storeCode));
-
-        const orderCount = Number(orderSummary[0]?.orderCount || 0);
-        const spend = Number(orderSummary[0]?.totalSpend || 0).toFixed(2);
-
-        return {
-          ...st,
-          totalOrdersCount: orderCount,
-          totalSpend: spend,
-        };
+    // N mağaza için N sorgu yerine tek GROUP BY; mağaza sayısı büyüdüğünde de
+    // sabit sorgu sayısı korunur.
+    const summaryQuery = db
+      .select({
+        storeCode: orders.buyerStore,
+        orderCount: count(),
+        totalSpend: sum(orders.totalCost),
       })
-    );
+      .from(orders);
+    const summaries =
+      user.role === "STORE_USER"
+        ? await summaryQuery
+            .where(eq(orders.buyerStore, user.storeCode))
+            .groupBy(orders.buyerStore)
+        : await summaryQuery.groupBy(orders.buyerStore);
+    const summariesByStore = new Map(summaries.map((row) => [row.storeCode, row]));
+
+    const storeStats = scopedStores.map((store) => {
+      const summary = summariesByStore.get(store.storeCode);
+      return {
+        ...store,
+        // Yalnız ADMIN hassas mağaza varsayılanlarını görür. MANAGER ve
+        // STORE_USER operasyon istatistiklerini kişisel/ödeme verisi olmadan alır.
+        defaultCard: user.role === "ADMIN" ? store.defaultCard : maskCreditCard(store.defaultCard),
+        defaultEmail: user.role === "ADMIN" ? store.defaultEmail : maskEmail(store.defaultEmail),
+        totalOrdersCount: Number(summary?.orderCount || 0),
+        totalSpend: Number(summary?.totalSpend || 0).toFixed(2),
+      };
+    });
 
     return NextResponse.json({ stores: storeStats });
   } catch (error: unknown) {
@@ -51,13 +66,22 @@ export async function POST(req: Request) {
     // Zod doğrulama (T3.1)
     const parsed = await parseBody(req, storeCreateSchema);
     if ("response" in parsed) return parsed.response;
+    if (
+      currentUser.role !== "ADMIN" &&
+      (parsed.data.defaultCard !== undefined || parsed.data.defaultEmail !== undefined)
+    ) {
+      return NextResponse.json(
+        { error: "Ödeme ve sipariş e-postası varsayılanlarını yalnız ADMIN yönetebilir." },
+        { status: 403 }
+      );
+    }
     const {
       storeCode,
       storeName,
       marketplace = "AMAZON",
-      buyerName = "Harun",
+      buyerName = currentUser.name,
       currency = "USD",
-      defaultCard = "1753",
+      defaultCard = "",
       defaultEmail = "",
       notes = "",
     } = parsed.data;
@@ -120,6 +144,15 @@ export async function PATCH(req: Request) {
     // Zod doğrulama (T3.1)
     const parsed = await parseBody(req, storeUpdateSchema);
     if ("response" in parsed) return parsed.response;
+    if (
+      currentUser.role !== "ADMIN" &&
+      (parsed.data.defaultCard !== undefined || parsed.data.defaultEmail !== undefined)
+    ) {
+      return NextResponse.json(
+        { error: "Ödeme ve sipariş e-postası varsayılanlarını yalnız ADMIN yönetebilir." },
+        { status: 403 }
+      );
+    }
     const { id, storeName, buyerName, status, defaultCard, defaultEmail, notes } = parsed.data;
 
     const existing = await db

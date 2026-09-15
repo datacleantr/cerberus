@@ -122,7 +122,7 @@ export async function POST(req: Request) {
             marketplace: "AMAZON",
             buyerName: actorName,
             currency: "USD",
-            defaultCard: "1753",
+            defaultCard: null,
             notes: `XLS içe aktarımında tanımsız mağaza kodu olarak karşılaşıldı; ${actorName} tarafından ${new Date().toISOString().split("T")[0]} tarihinde otomatik oluşturuldu.`,
           })
           .onConflictDoNothing(); // paralel import yarışı: varsa sessizce geç
@@ -201,7 +201,7 @@ export async function POST(req: Request) {
                 problemAction: r.problemAction || "",
                 problemResult: r.problemResult || "",
                 refundAmount: Number(refundAmount).toFixed(2),
-                creditCard: r.creditCard || "1753",
+                creditCard: r.creditCard || null,
                 isFragile: r.isFragile || "NO",
                 isMultiPack: r.isMultiPack || "NO",
                 isBundle: r.isBundle || "NO",

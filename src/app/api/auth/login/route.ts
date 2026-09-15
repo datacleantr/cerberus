@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { SESSION_COOKIE, SESSION_TTL_SECONDS, createSessionToken } from "@/lib/session";
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
+  createAuthVersion,
+  createSessionToken,
+  isSessionRole,
+} from "@/lib/session";
 import { hashPassword, isRevokedLegacyPassword, verifyPassword } from "@/lib/passwords";
 import { checkRateLimit, clearRateLimit } from "@/lib/rateLimit";
 import { parseBody, loginSchema } from "@/lib/validation";
@@ -58,6 +64,13 @@ export async function POST(req: Request) {
     }
 
     const user = matched[0];
+    if (!isSessionRole(user.role)) {
+      log.error("auth/login", "Kullanıcı kaydında desteklenmeyen rol", {
+        userId: user.id,
+        role: user.role,
+      });
+      return genericFailure;
+    }
 
     // Repoda yayınlanmış eski demo parolaları kalıcı olarak iptal (F-04)
     if (isRevokedLegacyPassword(cleanPassword)) {
@@ -76,12 +89,15 @@ export async function POST(req: Request) {
     }
 
     // Geçiş penceresi (F-03): düz metin kayıt başarılı giriş anında bcrypt'e yükseltilir
+    let effectivePasswordHash = user.passwordHash;
     if (verification.needsUpgrade) {
       try {
+        const upgradedHash = await hashPassword(cleanPassword);
         await db
           .update(users)
-          .set({ passwordHash: await hashPassword(cleanPassword) })
+          .set({ passwordHash: upgradedHash })
           .where(eq(users.id, user.id));
+        effectivePasswordHash = upgradedHash;
       } catch (upgradeErr) {
         log.warn("auth/login", "Legacy parola hash yükseltmesi başarısız (ertelendi)", { err: String(upgradeErr) });
       }
@@ -89,14 +105,17 @@ export async function POST(req: Request) {
 
     clearRateLimit(accountKey);
 
-    const token = await createSessionToken({
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role as "ADMIN" | "MANAGER" | "STORE_USER",
-      storeCode: user.storeCode || "HRN",
-      avatar: user.avatar,
-    });
+    const token = await createSessionToken(
+      {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        storeCode: user.storeCode || "HRN",
+        avatar: user.avatar,
+      },
+      await createAuthVersion(effectivePasswordHash)
+    );
 
     if (!token) {
       return NextResponse.json(

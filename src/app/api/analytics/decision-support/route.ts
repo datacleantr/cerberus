@@ -129,8 +129,10 @@ export async function GET(req: Request) {
     }
     const pnlRanked = Array.from(pnlByProduct.values()).map((p) => ({
       ...p,
-      netProfit: Number((p.revenue - p.cost - p.refunds).toFixed(2)),
-      roi: p.cost ? Number((((p.revenue - p.cost - p.refunds) / p.cost) * 100).toFixed(1)) : null,
+      netProfit: Number((p.revenue - Math.max(0, p.cost - p.refunds)).toFixed(2)),
+      roi: Math.max(0, p.cost - p.refunds)
+        ? Number((((p.revenue - Math.max(0, p.cost - p.refunds)) / Math.max(0, p.cost - p.refunds)) * 100).toFixed(1))
+        : null,
       fulfillmentRate: p.units ? Number(((p.shipped / p.units) * 100).toFixed(1)) : 0,
     })).sort((a, b) => b.netProfit - a.netProfit);
 
