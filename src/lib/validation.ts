@@ -248,6 +248,23 @@ export const batchCreateSchema = z.object({
   notes: shortText(2000).optional(),
 });
 
+export const batchUpdateSchema = z.object({
+  status: z.enum(["HAZIRLANIYOR", "DEPODA", "SAYILDI", "AMAZONA_GONDERILDI"]),
+  notes: shortText(2000).optional(),
+});
+
+export const prepshipImportRowSchema = z.object({
+  asin: shortText(20).optional(),
+  msku: shortText(64).optional(),
+  quantity: z.coerce.number().min(0).max(1_000_000).optional(),
+  costUnit: z.coerce.number().min(0).max(1_000_000).optional(),
+});
+
+export const prepshipImportSchema = z.object({
+  rows: z.array(prepshipImportRowSchema).min(1, "Dosyada satır bulunamadı").max(20_000),
+  commit: z.boolean().optional().default(false),
+});
+
 export const userCreateSchema = z.object({
   name: shortText(100).min(2, "İsim zorunludur"),
   email: emailStr,

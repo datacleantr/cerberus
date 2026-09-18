@@ -1,0 +1,2 @@
+ALTER TABLE "orders" DROP CONSTRAINT "orders_fulfillment_type_enum";--> statement-breakpoint
+ALTER TABLE "orders" ADD CONSTRAINT "orders_fulfillment_type_enum" CHECK ("orders"."fulfillment_type" in ('FBA', 'FBM', 'RETURN', 'REMOVAL_ORDER'));

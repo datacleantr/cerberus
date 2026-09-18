@@ -7,7 +7,7 @@ export interface ImportRowProblem { row: number; field: string; message: string 
  * "Yolda", "Tam Geldi", "İPTAL", "Kayıp Depoya gelmiş".
  */
 export const CARGO_STATUSES = ["Yolda", "Tam Geldi", "İPTAL", "Kayıp Depoya gelmiş"] as const;
-export const FULFILLMENT_TYPES = ["FBA", "FBM"] as const;
+export const FULFILLMENT_TYPES = ["FBA", "FBM", "RETURN", "REMOVAL_ORDER"] as const;
 export const PSH_STATUSES = ["BEKLIYOR", "BATCH_OLUSTURULDU", "DEPO_SAYILDI", "AMAZONA_SEVK"] as const;
 export const INVENTORY_LAB_STATUSES = ["GIRILMEDI", "GIRILDI", "AKTIF_SATISTA"] as const;
 export function normalizeMoney(raw: unknown): number | null {

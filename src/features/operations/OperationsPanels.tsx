@@ -9,11 +9,32 @@ export function PshBatchPanel({
   batches,
   orders,
   onCreate,
+  onAdvanceStatus,
+  onExportInventoryLab,
+  onExportPrepShip,
+  onImportPrepShip,
 }: {
   batches: BatchView[];
   orders: OrderView[];
   onCreate: () => void;
+  onAdvanceStatus?: (batch: BatchView, nextStatus: string) => void;
+  onExportInventoryLab?: (batch: BatchView) => void;
+  onExportPrepShip?: (batch: BatchView) => void;
+  onImportPrepShip?: (batch: BatchView) => void;
 }) {
+  // Batch akışı: HAZIRLANIYOR -> DEPODA -> SAYILDI -> AMAZONA_GONDERILDI
+  // (denetim raporu §13 — bu sıralama artık gerçekten `PATCH
+  // /api/batches/[batchNumber]` ile yazılıyor, önceden yalnızca gösterimdi)
+  const NEXT_STATUS: Record<string, string> = {
+    HAZIRLANIYOR: "DEPODA",
+    DEPODA: "SAYILDI",
+    SAYILDI: "AMAZONA_GONDERILDI",
+  };
+  const NEXT_STATUS_LABEL: Record<string, string> = {
+    HAZIRLANIYOR: "Depoya Ulaştı Olarak İşaretle",
+    DEPODA: "Depo Sayımı Tamamlandı",
+    SAYILDI: "Amazona Sevk Edildi",
+  };
   return (
     <div className="space-y-4">
       <div className="bg-surface-1 border border-line rounded-2xl p-5 flex flex-wrap items-center justify-between gap-3">
@@ -97,6 +118,41 @@ export function PshBatchPanel({
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     {batch.inventoryLabSynced ? "Inventory Lab eşleşti" : "Inventory Lab bekliyor"}
                   </span>
+                </div>
+
+                <div className="mt-3 pt-3 border-t border-line flex flex-wrap items-center gap-2">
+                  {onExportPrepShip && (
+                    <button
+                      onClick={() => onExportPrepShip(batch)}
+                      className="px-3 py-1.5 rounded-lg bg-info/20 hover:bg-info/30 border border-info/40 text-info text-[11px] font-mono-tech font-bold uppercase transition"
+                    >
+                      PrepShip için İndir (.xlsx)
+                    </button>
+                  )}
+                  {onImportPrepShip && (
+                    <button
+                      onClick={() => onImportPrepShip(batch)}
+                      className="px-3 py-1.5 rounded-lg bg-caution/20 hover:bg-caution/30 border border-caution/40 text-caution text-[11px] font-mono-tech font-bold uppercase transition"
+                    >
+                      Inventory Lab Senkronu Kontrol Et
+                    </button>
+                  )}
+                  {NEXT_STATUS[batch.status] && onAdvanceStatus && (
+                    <button
+                      onClick={() => onAdvanceStatus(batch, NEXT_STATUS[batch.status])}
+                      className="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-ink text-[11px] font-mono-tech font-bold uppercase transition"
+                    >
+                      {NEXT_STATUS_LABEL[batch.status]}
+                    </button>
+                  )}
+                  {batch.status === "AMAZONA_GONDERILDI" && !batch.inventoryLabSynced && onExportInventoryLab && (
+                    <button
+                      onClick={() => onExportInventoryLab(batch)}
+                      className="px-3 py-1.5 rounded-lg bg-positive/20 hover:bg-positive/30 border border-positive/40 text-positive text-[11px] font-mono-tech font-bold uppercase transition"
+                    >
+                      Inventory Lab&rsquo;a Aktar (CSV)
+                    </button>
+                  )}
                 </div>
               </div>
             );
