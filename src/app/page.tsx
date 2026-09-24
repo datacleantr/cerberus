@@ -16,6 +16,7 @@ import { ProductJourneyDrawer } from "@/features/products/ProductJourneyDrawer";
 import { CrawlerPanel } from "@/features/crawler/CrawlerPanel";
 import { KeepaAnalysisPanel } from "@/features/keepa/KeepaAnalysisPanel";
 import { DecisionSupportDashboard } from "@/features/analytics/DecisionSupportDashboard";
+import { StoreHealthScreen } from "@/features/analytics/StoreHealthScreen";
 
 import { useCerberusData } from "@/features/useCerberusData";
 import { Sidebar, buildNavGroups } from "@/features/shell/Sidebar";
@@ -45,6 +46,10 @@ const PAGE_META: Record<TabId, { title: string; subtitle: string }> = {
   ANALYTICS: {
     title: "Karar Destek Analitik",
     subtitle: "XLS’ten kurtuluş: kârlılık, trend, mağaza kıyas ve fırsat sinyali — canlı",
+  },
+  STORE_HEALTH: {
+    title: "Haftalık Mağaza/Hesap Sağlığı",
+    subtitle: "Bu hafta/geçen hafta kıyası — sipariş yoksa skor uydurulmaz, sessizlik gün sayısıyla raporlanır",
   },
   CRAWLER: {
     title: "Crawler Keşif Masası",
@@ -378,6 +383,8 @@ export default function CerberusApp() {
           {activeTab === "ANALYTICS" && (
             <DecisionSupportDashboard storeCode={selectedStore} />
           )}
+
+          {activeTab === "STORE_HEALTH" && <StoreHealthScreen />}
 
           {activeTab === "CRAWLER" && (
             <CrawlerPanel defaultStore={selectedStore} />
