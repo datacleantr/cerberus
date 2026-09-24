@@ -64,6 +64,13 @@
       "when": 1789684160756,
       "tag": "0008_previous_tiger_shark",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790281771982,
+      "tag": "0009_dapper_kronos",
+      "breakpoints": true
     }
   ]
 }

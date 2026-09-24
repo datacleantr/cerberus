@@ -299,6 +299,9 @@ export const storeCreateSchema = z.object({
   defaultCard: optionalLastFour.optional(),
   defaultEmail: optionalEmail.optional(),
   notes: shortText(2000).optional(),
+  // NULL/boş = eşik yok (varsayılan). Girilirse: bu tutarı aşan ve bir
+  // STORE_USER tarafından girilen siparişler PENDING_APPROVAL'a düşer.
+  purchaseApprovalThreshold: z.coerce.number().nonnegative().nullable().optional(),
 });
 
 export const storeUpdateSchema = z.object({
@@ -309,6 +312,11 @@ export const storeUpdateSchema = z.object({
   defaultCard: optionalLastFour.optional(),
   defaultEmail: optionalEmail.optional(),
   notes: shortText(2000).optional(),
+  purchaseApprovalThreshold: z.coerce.number().nonnegative().nullable().optional(),
+});
+
+export const orderApprovalDecisionSchema = z.object({
+  decision: z.enum(["APPROVED", "REJECTED"]),
 });
 
 export const intelligenceCreateSchema = z.object({

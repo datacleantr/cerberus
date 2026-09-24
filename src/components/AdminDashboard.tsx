@@ -67,7 +67,11 @@ export function AdminDashboard({
   const [defaultCard, setDefaultCard] = useState("");
   const [defaultEmail, setDefaultEmail] = useState("");
   const [storeNotes, setStoreNotes] = useState("");
+  const [purchaseApprovalThreshold, setPurchaseApprovalThreshold] = useState("");
   const [savingStore, setSavingStore] = useState(false);
+  const [editingThresholdFor, setEditingThresholdFor] = useState<number | null>(null);
+  const [thresholdDraft, setThresholdDraft] = useState("");
+  const [savingThreshold, setSavingThreshold] = useState(false);
 
   // New User Modal state
   const [isNewUserModalOpen, setIsNewUserModalOpen] = useState(false);
@@ -172,6 +176,7 @@ export function AdminDashboard({
             ? { defaultCard, defaultEmail }
             : {}),
           notes: storeNotes,
+          purchaseApprovalThreshold: purchaseApprovalThreshold.trim() === "" ? null : Number(purchaseApprovalThreshold),
         }),
       });
 
@@ -181,6 +186,7 @@ export function AdminDashboard({
         setIsNewStoreModalOpen(false);
         setStoreCode("");
         setStoreName("");
+        setPurchaseApprovalThreshold("");
         fetchAdminData();
         if (onDataRefresh) onDataRefresh();
       } else {
@@ -212,6 +218,45 @@ export function AdminDashboard({
       }
     } catch {
       showFeedback("Durum güncellenemedi", "error");
+    }
+  };
+
+  const handleUpdateThreshold = async (store: any) => {
+    const trimmed = thresholdDraft.trim();
+    const nextThreshold = trimmed === "" ? null : Number(trimmed);
+    if (nextThreshold !== null && (Number.isNaN(nextThreshold) || nextThreshold < 0)) {
+      showFeedback("Eşik geçerli, negatif olmayan bir sayı olmalı (boş bırakmak = eşik yok).", "error");
+      return;
+    }
+    setSavingThreshold(true);
+    try {
+      const res = await fetch("/api/admin/stores", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: store.id, purchaseApprovalThreshold: nextThreshold }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStores((prev) =>
+          prev.map((s) =>
+            s.id === store.id
+              ? { ...s, purchaseApprovalThreshold: nextThreshold === null ? null : nextThreshold.toFixed(2) }
+              : s
+          )
+        );
+        showFeedback(
+          nextThreshold === null
+            ? `${store.storeCode} için onay eşiği kaldırıldı.`
+            : `${store.storeCode} onay eşiği $${nextThreshold.toFixed(2)} olarak ayarlandı.`
+        );
+        setEditingThresholdFor(null);
+      } else {
+        showFeedback(data.error || "Eşik güncellenemedi", "error");
+      }
+    } catch {
+      showFeedback("Eşik güncellenemedi", "error");
+    } finally {
+      setSavingThreshold(false);
     }
   };
 
@@ -296,6 +341,27 @@ export function AdminDashboard({
       }
     } catch {
       showFeedback("Silme başarısız oldu", "error");
+    }
+  };
+
+  const handleApprovalDecision = async (orderId: number, decision: "APPROVED" | "REJECTED") => {
+    try {
+      const res = await fetch(`/api/orders/${orderId}/approval`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, approvalStatus: decision } : o))
+        );
+        showFeedback(decision === "APPROVED" ? "Sipariş onaylandı." : "Sipariş reddedildi.");
+      } else {
+        showFeedback(data.error || "Onay işlemi başarısız oldu.", "error");
+      }
+    } catch {
+      showFeedback("Onay işlemi başarısız oldu", "error");
     }
   };
 
@@ -553,6 +619,54 @@ export function AdminDashboard({
                         <span className="text-positive font-bold">${st.totalSpend}</span>
                       </div>
                     </div>
+
+                    <div className="mb-3 flex items-center justify-between gap-2 text-xs font-mono-tech bg-surface-base p-3 rounded-xl border border-line">
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-ink-faint block">Satın Alma Onay Eşiği</span>
+                        {editingThresholdFor === st.id ? (
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              autoFocus
+                              placeholder="Boş = eşik yok"
+                              value={thresholdDraft}
+                              onChange={(e) => setThresholdDraft(e.target.value)}
+                              className="w-24 px-2 py-1 bg-surface-1 border border-line rounded-lg text-ink"
+                            />
+                            <button
+                              onClick={() => handleUpdateThreshold(st)}
+                              disabled={savingThreshold}
+                              className="px-2 py-1 rounded-lg bg-brand text-ink font-bold hover:bg-brand-soft"
+                            >
+                              Kaydet
+                            </button>
+                            <button
+                              onClick={() => setEditingThresholdFor(null)}
+                              className="px-2 py-1 rounded-lg text-ink-faint hover:text-ink"
+                            >
+                              Vazgeç
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-ink font-bold">
+                            {st.purchaseApprovalThreshold != null ? `$${st.purchaseApprovalThreshold} üzeri` : "Tanımlı değil"}
+                          </span>
+                        )}
+                      </div>
+                      {editingThresholdFor !== st.id && (
+                        <button
+                          onClick={() => {
+                            setEditingThresholdFor(st.id);
+                            setThresholdDraft(st.purchaseApprovalThreshold != null ? String(st.purchaseApprovalThreshold) : "");
+                          }}
+                          className="shrink-0 text-[11px] text-brand-soft hover:underline font-bold"
+                        >
+                          Düzenle
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="pt-3 border-t border-line flex items-center justify-between text-xs font-mono-tech">
@@ -713,6 +827,7 @@ export function AdminDashboard({
                   <th className="p-3">Adet</th>
                   <th className="p-3">Birim Maliyet</th>
                   <th className="p-3">Kargo Durumu</th>
+                  <th className="p-3">Onay</th>
                   <th className="p-3 text-right">Sil</th>
                 </tr>
               </thead>
@@ -731,6 +846,41 @@ export function AdminDashboard({
                         {o.cargoStatus}
                       </span>
                     </td>
+                    <td className="p-3">
+                      {o.approvalStatus === "PENDING_APPROVAL" ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-caution/15 border border-caution/30 text-caution text-[10px] font-bold">
+                            ONAY BEKLİYOR
+                          </span>
+                          <button
+                            onClick={() => handleApprovalDecision(o.id, "APPROVED")}
+                            className="px-1.5 py-0.5 rounded bg-positive/15 border border-positive/30 text-positive text-[10px] font-bold hover:bg-positive/25"
+                            title="Onayla"
+                          >
+                            Onayla
+                          </button>
+                          <button
+                            onClick={() => handleApprovalDecision(o.id, "REJECTED")}
+                            className="px-1.5 py-0.5 rounded bg-danger/15 border border-danger/30 text-danger text-[10px] font-bold hover:bg-danger/25"
+                            title="Reddet"
+                          >
+                            Reddet
+                          </button>
+                        </div>
+                      ) : o.approvalStatus === "APPROVED" || o.approvalStatus === "REJECTED" ? (
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[10px] font-bold ${
+                            o.approvalStatus === "APPROVED"
+                              ? "bg-positive/15 border-positive/30 text-positive"
+                              : "bg-danger/15 border-danger/30 text-danger"
+                          }`}
+                        >
+                          {o.approvalStatus === "APPROVED" ? "ONAYLANDI" : "REDDEDİLDİ"}
+                        </span>
+                      ) : (
+                        <span className="text-ink-faint text-[10px]">—</span>
+                      )}
+                    </td>
                     <td className="p-3 text-right">
                       <button
                         onClick={() => handleDeleteOrderRow(o.id)}
@@ -744,14 +894,14 @@ export function AdminDashboard({
                 ))}
                 {ordersLoading && (
                   <tr>
-                    <td colSpan={9} className="p-8 text-center text-ink-muted">
+                    <td colSpan={10} className="p-8 text-center text-ink-muted">
                       Sipariş sayfası yükleniyor…
                     </td>
                   </tr>
                 )}
                 {!ordersLoading && displayedOrders.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="p-8 text-center text-ink-muted">
+                    <td colSpan={10} className="p-8 text-center text-ink-muted">
                       Bu filtrelerle eşleşen sipariş bulunamadı.
                     </td>
                   </tr>
@@ -1129,6 +1279,19 @@ export function AdminDashboard({
                   />
                 </div>
               )}
+
+              <div>
+                <label className="block text-ink-muted mb-1">Satın Alma Onay Eşiği ($, isteğe bağlı)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="Boş = eşik yok, hiçbir sipariş onay beklemez"
+                  value={purchaseApprovalThreshold}
+                  onChange={(e) => setPurchaseApprovalThreshold(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                />
+              </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-line">
                 <button

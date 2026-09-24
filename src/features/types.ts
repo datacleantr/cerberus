@@ -22,6 +22,8 @@ export interface StoreView {
   marketplace: string;
   status: string;
   accountHealthScore: number;
+  /** NULL = eşik tanımlı değil, hiçbir sipariş onay beklemez (bkz. domain/purchaseApproval.ts) */
+  purchaseApprovalThreshold?: string | null;
 }
 
 export interface OrderView {
@@ -69,6 +71,10 @@ export interface OrderView {
   pshBatchNo?: string | null;
   pshStatus: string;
   inventoryLabStatus: string;
+  /** 'AUTO_APPROVED' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' */
+  approvalStatus?: string;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
 }
 
 export interface BatchView {

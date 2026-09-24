@@ -39,6 +39,14 @@ export const stores = pgTable("stores", {
   defaultEmail: text("default_email"),
   notes: text("notes"),
   accountHealthScore: integer("account_health_score").notNull().default(98),
+  /**
+   * Satın alma onay eşiği (F-06 / N-6 takip bulgusu). NULL = eşik tanımlı
+   * değil, o mağaza için hiçbir sipariş onay bekletmez (varsayılan davranış
+   * değişmez). Bir tutar girilirse, bu mağazada o tutarı aşan ve bir
+   * STORE_USER tarafından girilen siparişler PENDING_APPROVAL'a düşer —
+   * engellenmez, işaretlenir (bkz. orders.approval_status).
+   */
+  purchaseApprovalThreshold: numeric("purchase_approval_threshold", { precision: 12, scale: 2 }),
   totalOrdersCount: integer("total_orders_count").notNull().default(0),
   totalSpend: numeric("total_spend", { precision: 12, scale: 2 }).notNull().default("0.00"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -421,6 +429,17 @@ export const orders = pgTable(
   pshStatus: text("psh_status").notNull().default("BEKLIYOR"), // 'BEKLIYOR' | 'BATCH_OLUSTURULDU' | 'DEPO_SAYILDI' | 'AMAZONA_SEVK'
   inventoryLabStatus: text("inventory_lab_status").notNull().default("GIRILMEDI"), // 'GIRILMEDI' | 'GIRILDI' | 'AKTIF_SATISTA'
 
+  /**
+   * Satın alma onay eşiği (F-06 / N-6 takip bulgusu). Varsayılan
+   * AUTO_APPROVED — mağazada eşik tanımlı değilse veya siparişi giren
+   * ADMIN/MANAGER ise hep bu değerde kalır (bkz. src/domain/purchaseApproval.ts).
+   * PENDING_APPROVAL: sipariş ENGELLENMEDİ, oluşturuldu — yalnız işaretlendi;
+   * ADMIN/MANAGER APPROVED/REJECTED'e çevirene kadar görünür kalır.
+   */
+  approvalStatus: text("approval_status").notNull().default("AUTO_APPROVED"),
+  approvedBy: text("approved_by"),
+  approvedAt: timestamp("approved_at"),
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 },
@@ -469,6 +488,8 @@ export const orders = pgTable(
   check("orders_inventory_lab_status_enum", sql`${t.inventoryLabStatus} in
     ('GIRILMEDI', 'GIRILDI', 'AKTIF_SATISTA')`),
   check("orders_fulfillment_type_enum", sql`${t.fulfillmentType} in ('FBA', 'FBM', 'RETURN', 'REMOVAL_ORDER')`),
+  check("orders_approval_status_enum", sql`${t.approvalStatus} in
+    ('AUTO_APPROVED', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED')`),
 ]);
 
 // 7. PSH Batch Master Table (PSH Programı Ön-Envanter Gruplama)

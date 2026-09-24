@@ -32,7 +32,7 @@ Amazon SP-API mevcut değildir. Bu veri kaynağı bağlanana kadar “Amazon'a s
 ### Kimlik ve organizasyon
 
 - `users`: bcrypt credential, rol ve mağaza kapsamı.
-- `stores`: mağaza kodu, marketplace ve operasyonel varsayılanlar.
+- `stores`: mağaza kodu, marketplace ve operasyonel varsayılanlar; `purchase_approval_threshold` (NULL = eşik yok) satın alma onay kuralını taşır (bkz. §4).
 - `researchers`, `research_sessions`: sourcing kadrosu ve araştırma oturumları.
 
 ### Ürün çekirdeği
@@ -44,7 +44,7 @@ Amazon SP-API mevcut değildir. Bu veri kaynağı bağlanana kadar “Amazon'a s
 
 ### Operasyon
 
-- `orders`: 40 kaynak kolonunu koruyan sipariş kaydı, ayrıca `product_id`, PSH ve Inventory Lab alanları.
+- `orders`: 40 kaynak kolonunu koruyan sipariş kaydı, ayrıca `product_id`, PSH ve Inventory Lab alanları; `approval_status`/`approved_by`/`approved_at` satın alma onay durumu (varsayılan `AUTO_APPROVED`, bkz. §4).
 - `psh_batches`: mağaza kapsamlı ön-envanter/sevkiyat partileri.
 - `audit_logs`: kritik create/update/delete ve yönetim işlemlerinin denetim izi.
 - `app_settings`: ROI eşikleri gibi yönetilebilir uygulama ayarları.
@@ -82,6 +82,8 @@ Döviz dönüşümü yapılmamaktadır. Farklı para birimleri tek toplama dahil
 Kurallar hem liste hem kayıt-mutasyonu uçlarında uygulanır. İstemci `storeCode=ALL` göndererek mağaza kapsamını yükseltemez. Hassas kart/e-posta alanları API ve CSV export'ta rol bazında maskelenir. Kullanıcı dizini ve audit kayıtları ihtiyaç dışı rollere sipariş payload'ı içinde verilmez.
 
 JWT, imza ve süre kontrolüne ek olarak her API isteğinde canlı kullanıcı kaydıyla doğrulanır. Kullanıcı silme, rol/mağaza değişikliği ve parola reset'i eski oturum yetkisini derhal etkiler.
+
+**Satın alma onay eşiği** (`src/domain/purchaseApproval.ts`): bir mağazada `purchase_approval_threshold` tanımlıysa ve bir `STORE_USER` bu tutarı aşan bir sipariş girerse, sipariş ENGELLENMEZ — oluşturulur ve `PENDING_APPROVAL` olarak işaretlenir. `ADMIN`/`MANAGER` kendi girdiği siparişte bu kuraldan muaftır (zaten onay yetkisine sahip). Yalnız `PATCH /api/orders/[id]/approval` (yalnız `ADMIN`/`MANAGER`) bir siparişi `APPROVED`/`REJECTED`'e çevirebilir — genel sipariş `PATCH`'i (`/api/orders/[id]`) bu alana asla yazamaz, aksi halde bir `STORE_USER` kendi eşik-aşan siparişini kendi kendine onaylayabilirdi.
 
 ## 5. Sipariş sorgu sözleşmesi
 

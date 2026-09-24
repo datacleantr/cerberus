@@ -6,6 +6,7 @@ import { resolveProduct, normalizeAsin } from "@/db/resolveProduct";
 import { parseBody, orderCreateSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { maskOrderForRole, minimizeUsersForRole } from "@/lib/privacy";
+import { evaluatePurchaseApproval } from "@/domain/purchaseApproval";
 import { desc, eq, and, inArray, count, sql, ilike, or, type SQL } from "drizzle-orm";
 
 export async function GET(req: Request) {
@@ -250,6 +251,22 @@ export async function POST(req: Request) {
     const calculatedTotal = Number(totalCost) || Number(unitCost) * Number(quantity);
     const calculatedCorrected = Number(correctedCost) || calculatedTotal;
 
+    // Satın alma onay eşiği (F-06 / N-6 takip bulgusu): eşik aşılırsa sipariş
+    // ENGELLENMEZ, PENDING_APPROVAL olarak işaretlenir (bkz. domain/purchaseApproval.ts).
+    const [targetStoreRow] = await db
+      .select({ purchaseApprovalThreshold: stores.purchaseApprovalThreshold })
+      .from(stores)
+      .where(eq(stores.storeCode, targetStore))
+      .limit(1);
+    const approvalDecision = evaluatePurchaseApproval({
+      totalCost: calculatedTotal,
+      creatorRole: currentUser.role,
+      threshold:
+        targetStoreRow?.purchaseApprovalThreshold != null
+          ? Number(targetStoreRow.purchaseApprovalThreshold)
+          : null,
+    });
+
     // AŞAMA 1.2: Sipariş bir ürüne bağlanır; ürün yoksa katalogda oluşturulur.
     // Tek transaction: ürün yaratılıp sipariş yazılamazsa ikisi de geri alınır.
     const normalizedAsin = normalizeAsin(asin);
@@ -327,6 +344,7 @@ export async function POST(req: Request) {
         pshBatchNo: pshBatchNo || null,
         pshStatus,
         inventoryLabStatus,
+        approvalStatus: approvalDecision.status,
       })
       .returning();
 
@@ -344,8 +362,23 @@ export async function POST(req: Request) {
       details: `${targetStore} mağazasına ${quantity} adet (${unitCost}$) sipariş girildi.`,
     });
 
+    if (approvalDecision.status === "PENDING_APPROVAL") {
+      await db.insert(auditLogs).values({
+        actorName,
+        storeCode: targetStore,
+        actionType: "ORDER_APPROVAL_REQUIRED",
+        targetEntity: `${orderNumber} - ${productTitle.slice(0, 32)}`,
+        beforeState: "AUTO_APPROVED",
+        afterState: "PENDING_APPROVAL",
+        details: approvalDecision.reason,
+      });
+    }
+
     return NextResponse.json({
-      message: "Sipariş Google Drive XLS veritabanına başarıyla kaydedildi.",
+      message:
+        approvalDecision.status === "PENDING_APPROVAL"
+          ? `Sipariş kaydedildi, ancak mağaza eşiğini aştığı için ADMIN/MANAGER onayı bekliyor. ${approvalDecision.reason}`
+          : "Sipariş Google Drive XLS veritabanına başarıyla kaydedildi.",
       order: inserted,
     });
   } catch (error: unknown) {

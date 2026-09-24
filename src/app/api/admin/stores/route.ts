@@ -84,6 +84,7 @@ export async function POST(req: Request) {
       defaultCard = "",
       defaultEmail = "",
       notes = "",
+      purchaseApprovalThreshold = null,
     } = parsed.data;
 
     const cleanCode = storeCode.trim().toUpperCase();
@@ -111,6 +112,8 @@ export async function POST(req: Request) {
         defaultCard,
         defaultEmail,
         notes,
+        purchaseApprovalThreshold:
+          purchaseApprovalThreshold === null ? null : purchaseApprovalThreshold.toFixed(2),
         totalOrdersCount: 0,
         totalSpend: "0.00",
       })
@@ -153,7 +156,8 @@ export async function PATCH(req: Request) {
         { status: 403 }
       );
     }
-    const { id, storeName, buyerName, status, defaultCard, defaultEmail, notes } = parsed.data;
+    const { id, storeName, buyerName, status, defaultCard, defaultEmail, notes, purchaseApprovalThreshold } =
+      parsed.data;
 
     const existing = await db
       .select()
@@ -172,6 +176,10 @@ export async function PATCH(req: Request) {
     if (defaultCard !== undefined) updateData.defaultCard = defaultCard;
     if (defaultEmail !== undefined) updateData.defaultEmail = defaultEmail;
     if (notes !== undefined) updateData.notes = notes;
+    if (purchaseApprovalThreshold !== undefined) {
+      updateData.purchaseApprovalThreshold =
+        purchaseApprovalThreshold === null ? null : purchaseApprovalThreshold.toFixed(2);
+    }
 
     const [updated] = await db
       .update(stores)
