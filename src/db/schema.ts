@@ -622,3 +622,77 @@ export const appSettings = pgTable("app_settings", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 export type AppSetting = typeof appSettings.$inferSelect;
+
+// ============================================================================
+// AŞAMA 7 — MAĞAZA RUTİN KONTROL LİSTESİ + ARAÇ/VARLIK TAKİBİ (2026-09-25)
+// Kaynak: kullanıcının yüklediği "Amazon Mağaza Ekibi Rutin" belgesi.
+// Kullanıcının kendi notu: belgedeki 5 rol şablonu GERÇEK yapıyı yansıtmıyor
+// — her mağazada TEK operatör (o mağazanın STORE_USER'ı) hepsini yapıyor.
+// Bu yüzden rutin KATALOĞU DB'de değil, statik/konsolide bir liste olarak
+// src/domain/routineCatalog.ts içinde tutulur — burada yalnız TAMAMLANMA
+// kayıtları saklanır (bkz. src/domain/storeRoutines.ts).
+//
+// TASARIM (kullanıcı onayı): her mağazanın kendi STORE_USER'ı kendi
+// rutinini işaretler; ADMIN/MANAGER filo genelinde roll-up görür. İkinci
+// bölüm (STORE_ASSETS) ayrı: araç/abonelik/alan adı/Shopify site takibi.
+// ============================================================================
+
+/**
+ * 15. ROUTINE_COMPLETIONS — Bir mağazanın bir rutini bir dönemde işaretlemesi.
+ */
+export const routineCompletions = pgTable(
+  "routine_completions",
+  {
+    id: serial("id").primaryKey(),
+    storeCode: text("store_code").notNull().references(() => stores.storeCode),
+    routineId: text("routine_id").notNull(), // statik kataloğa (routineCatalog.ts) referans
+    frequency: text("frequency").notNull(), // 'DAILY' | 'WEEKLY' | 'MONTHLY' — denormalize, sorgu kolaylığı
+    periodKey: text("period_key").notNull(), // Gün: 'YYYY-MM-DD', Hafta: ISO 'YYYY-Www', Ay: 'YYYY-MM'
+    completedBy: text("completed_by").notNull(),
+    completedAt: timestamp("completed_at").defaultNow().notNull(),
+    note: text("note"), // Kritik rutinler için kısa kanıt notu (belge: "ekran görüntüsü veya kısa not")
+  },
+  (t) => [
+    uniqueIndex("routine_completions_uq").on(t.storeCode, t.routineId, t.periodKey),
+    index("routine_completions_store_idx").on(t.storeCode),
+    check("routine_completions_frequency_enum", sql`${t.frequency} in ('DAILY','WEEKLY','MONTHLY')`),
+  ]
+);
+
+/**
+ * 16. STORE_ASSETS — Araç/abonelik/alan adı/Shopify site takibi.
+ *
+ * storeCode NULL = şirket geneli varlık (ör. paylaşılan ASINZEN/Keepa
+ * üyeliği tek hesap, tüm mağazalar için). DÜRÜSTLÜK İLKESİ: "durum" alanı
+ * BURADA YOK — süresi geçmiş bir aboneliği "aktif" diye saklamak sessizce
+ * yanlış bilgi üretir. Durum her okumada expiresAt'tan canlı hesaplanır
+ * (bkz. src/domain/assetTracker.ts).
+ */
+export const storeAssets = pgTable(
+  "store_assets",
+  {
+    id: serial("id").primaryKey(),
+    storeCode: text("store_code").references(() => stores.storeCode),
+    assetType: text("asset_type").notNull(), // 'SUBSCRIPTION'|'DOMAIN'|'HOSTING'|'SHOPIFY_SITE'|'OTHER'
+    name: text("name").notNull(),
+    provider: text("provider"),
+    url: text("url"),
+    expiresAt: timestamp("expires_at"),
+    renewalCost: numeric("renewal_cost", { precision: 10, scale: 2 }),
+    notes: text("notes"),
+    lastCheckedAt: timestamp("last_checked_at"),
+    lastCheckedBy: text("last_checked_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("store_assets_store_idx").on(t.storeCode),
+    check(
+      "store_assets_type_enum",
+      sql`${t.assetType} in ('SUBSCRIPTION','DOMAIN','HOSTING','SHOPIFY_SITE','OTHER')`
+    ),
+  ]
+);
+
+export type RoutineCompletion = typeof routineCompletions.$inferSelect;
+export type StoreAsset = typeof storeAssets.$inferSelect;

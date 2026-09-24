@@ -17,6 +17,7 @@ import { CrawlerPanel } from "@/features/crawler/CrawlerPanel";
 import { KeepaAnalysisPanel } from "@/features/keepa/KeepaAnalysisPanel";
 import { DecisionSupportDashboard } from "@/features/analytics/DecisionSupportDashboard";
 import { StoreHealthScreen } from "@/features/analytics/StoreHealthScreen";
+import { RoutineOperationsScreen } from "@/features/operations/RoutineOperationsScreen";
 
 import { useCerberusData } from "@/features/useCerberusData";
 import { Sidebar, buildNavGroups } from "@/features/shell/Sidebar";
@@ -50,6 +51,10 @@ const PAGE_META: Record<TabId, { title: string; subtitle: string }> = {
   STORE_HEALTH: {
     title: "Haftalık Mağaza/Hesap Sağlığı",
     subtitle: "Bu hafta/geçen hafta kıyası — sipariş yoksa skor uydurulmaz, sessizlik gün sayısıyla raporlanır",
+  },
+  ROUTINES: {
+    title: "Rutin & Varlık Takibi",
+    subtitle: "Günlük/haftalık/aylık mağaza kontrol listesi ve araç/abonelik/domain takibi — mağaza ekibi rutin belgesinden uyarlandı",
   },
   CRAWLER: {
     title: "Crawler Keşif Masası",
@@ -385,6 +390,8 @@ export default function CerberusApp() {
           )}
 
           {activeTab === "STORE_HEALTH" && <StoreHealthScreen />}
+
+          {activeTab === "ROUTINES" && <RoutineOperationsScreen />}
 
           {activeTab === "CRAWLER" && (
             <CrawlerPanel defaultStore={selectedStore} />

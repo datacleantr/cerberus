@@ -193,6 +193,7 @@ export type TabId =
   | "BRIEFING_DECISION"
   | "ANALYTICS"
   | "STORE_HEALTH"
+  | "ROUTINES"
   | "CRAWLER"
   | "KEEPA"
   | "PRODUCTS"

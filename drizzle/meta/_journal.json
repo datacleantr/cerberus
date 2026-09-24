@@ -71,6 +71,13 @@
       "when": 1790281771982,
       "tag": "0009_dapper_kronos",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790286484820,
+      "tag": "0010_hot_lord_hawal",
+      "breakpoints": true
     }
   ]
 }

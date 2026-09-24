@@ -319,6 +319,60 @@ export const orderApprovalDecisionSchema = z.object({
   decision: z.enum(["APPROVED", "REJECTED"]),
 });
 
+/**
+ * Mağaza rutin kontrol listesi (F-07) — kaynak: "Amazon Mağaza Ekibi Rutin"
+ * belgesi. Rutin kataloğu statik (src/domain/routineCatalog.ts); burada
+ * yalnız hangi mağaza/rutin işaretleniyor ve isteğe bağlı kanıt notu
+ * doğrulanır.
+ */
+export const routineCompleteSchema = z.object({
+  storeCode: shortText(32).min(1, "Mağaza kodu zorunludur"),
+  routineId: shortText(80).min(1, "Rutin kimliği zorunludur"),
+  note: shortText(500).nullable().optional(),
+});
+
+/**
+ * Araç/varlık takibi (F-07, ikinci bölüm) — ASINZEN/Keepa üyelik,
+ * GoDaddy alan adı/hosting, Shopify site vb. storeCode boş/null = şirket
+ * geneli varlık (yalnız ADMIN/MANAGER oluşturabilir, route katmanında
+ * zorlanır).
+ */
+export const assetCreateSchema = z.object({
+  storeCode: shortText(32).min(1).nullable().optional(),
+  assetType: z.enum(["SUBSCRIPTION", "DOMAIN", "HOSTING", "SHOPIFY_SITE", "OTHER"]),
+  name: shortText(200).min(1, "Varlık adı zorunludur"),
+  provider: shortText(100).nullable().optional(),
+  url: z.union([z.literal(""), z.string().trim().url().max(500)]).nullable().optional(),
+  expiresAt: z.coerce.date().nullable().optional(),
+  renewalCost: z.coerce.number().nonnegative().nullable().optional(),
+  notes: shortText(2000).nullable().optional(),
+});
+
+export const assetUpdateSchema = z
+  .object({
+    assetType: z.enum(["SUBSCRIPTION", "DOMAIN", "HOSTING", "SHOPIFY_SITE", "OTHER"]).optional(),
+    name: shortText(200).min(1).optional(),
+    provider: shortText(100).nullable().optional(),
+    url: z.union([z.literal(""), z.string().trim().url().max(500)]).nullable().optional(),
+    expiresAt: z.coerce.date().nullable().optional(),
+    renewalCost: z.coerce.number().nonnegative().nullable().optional(),
+    notes: shortText(2000).nullable().optional(),
+    /** true: lastCheckedAt/lastCheckedBy'ı şimdiki kullanıcı+an ile günceller */
+    markChecked: z.boolean().optional(),
+  })
+  .refine(
+    (value) =>
+      value.assetType !== undefined ||
+      value.name !== undefined ||
+      value.provider !== undefined ||
+      value.url !== undefined ||
+      value.expiresAt !== undefined ||
+      value.renewalCost !== undefined ||
+      value.notes !== undefined ||
+      value.markChecked !== undefined,
+    { message: "Güncellenecek en az bir alan gönderin." }
+  );
+
 export const intelligenceCreateSchema = z.object({
   sourceUrl: z.union([z.literal(""), z.string().trim().url().max(1000)]).optional(),
   title: shortText(500).min(1, "Ürün başlığı zorunludur"),
