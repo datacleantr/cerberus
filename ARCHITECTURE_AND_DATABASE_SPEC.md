@@ -98,7 +98,7 @@ JWT, imza ve süre kontrolüne ek olarak her API isteğinde canlı kullanıcı k
 ## 6. Import ve fixture sözleşmesi
 
 - XLS/XLSX/CSV import'u kullanıcı önizlemesi ve server doğrulaması içerir.
-- Google Drive indirmesi yalnız izinli Drive URL'lerini ve 20 MB stream sınırını kabul eder.
+- Google Drive indirmesi yalnız izinli Drive URL'lerini ve 50 MB stream sınırını kabul eder.
 - Import transaction'ı ürün çözümleme + sipariş insert işlemlerini atomik yapmalıdır.
 - Depodaki fixture 24 sipariş ve 4 başlangıç mağazasıdır; müşteri/canlı veri olarak adlandırılmaz.
 - Database reset araçları production'da 404'tür; development'ta ADMIN + açık onay gerektirir ve FK sıralı transaction kullanır.
