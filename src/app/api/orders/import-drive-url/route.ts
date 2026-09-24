@@ -4,6 +4,7 @@ import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { parseBody, driveUrlSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { readResponseBytesWithLimit } from "@/lib/httpSafety";
+import { excelCellToDateStr } from "@/lib/excelDate";
 
 function extractSpreadsheetId(url: string): string | null {
   const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -38,7 +39,8 @@ export async function POST(req: Request) {
 
     const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`;
 
-    // T3.4: 15 sn timeout + 20 MB içerik üst sınırı
+    // T3.4: 15 sn timeout + 50 MB içerik üst sınırı (DoS/kaynak tüketimi koruması)
+    const MAX_DRIVE_BYTES = 50 * 1024 * 1024;
     const fetchResponse = await fetch(exportUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Cerberus Commerce Intelligence Bot)",
@@ -57,24 +59,24 @@ export async function POST(req: Request) {
     }
 
     const contentLength = Number(fetchResponse.headers.get("content-length") || "0");
-    if (contentLength > 20 * 1024 * 1024) {
+    if (contentLength > MAX_DRIVE_BYTES) {
       return NextResponse.json(
-        { error: "Google E-Tablo dosyası çok büyük (üst sınır 20 MB)." },
+        { error: "Google E-Tablo dosyası çok büyük (üst sınır 50 MB)." },
         { status: 413 }
       );
     }
 
-    // Content-Length eksik/yanlış olabilir; akışı okurken de 20 MB sınırını uygula.
+    // Content-Length eksik/yanlış olabilir; akışı okurken de üst sınırı uygula.
     let bytes: Uint8Array;
     try {
-      bytes = await readResponseBytesWithLimit(fetchResponse, 20 * 1024 * 1024);
+      bytes = await readResponseBytesWithLimit(fetchResponse, MAX_DRIVE_BYTES);
     } catch {
       return NextResponse.json(
-        { error: "Google E-Tablo dosyası çok büyük (üst sınır 20 MB)." },
+        { error: "Google E-Tablo dosyası çok büyük (üst sınır 50 MB)." },
         { status: 413 }
       );
     }
-    const workbook = XLSX.read(bytes, { type: "array" });
+    const workbook = XLSX.read(bytes, { type: "array", cellDates: true });
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
 
@@ -105,7 +107,7 @@ export async function POST(req: Request) {
 
       parsedRows.push({
         buyerStore: String(cols[0] || defaultStore).trim() || defaultStore,
-        orderDate: String(cols[1] || new Date().toISOString().split("T")[0]).trim(),
+        orderDate: excelCellToDateStr(cols[1]) || new Date().toISOString().split("T")[0],
         imageUrl: String(cols[2] || "").trim(),
         fulfillmentType: String(cols[3] || "FBA").trim(),
         productTitle: productTitle || "Google Drive Ürünü",

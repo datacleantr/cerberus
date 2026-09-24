@@ -78,7 +78,7 @@ Depodaki geliştirme fixture'ı **24 sipariş** ve **4 başlangıç mağazası**
 ## İçe ve dışa aktarma
 
 - Tarayıcı `.xlsx`, `.xls` ve `.csv` dosyalarını önizler; server write yolu satırları tekrar doğrular.
-- Google Drive indirmeleri izinli URL politikası ve 20 MB gerçek stream sınırı kullanır.
+- Google Drive indirmeleri izinli URL politikası ve 50 MB gerçek stream sınırı kullanır.
 - Sipariş CSV export'u aktif server filtrelerinin tüm sonucunu chunk'lar hâlinde üretir; 10.000 kaydı aşan sonuç sessizce kesilmez, `422` döner.
 - Store kullanıcılarında hassas alanlar export sırasında da maskelenir.
 

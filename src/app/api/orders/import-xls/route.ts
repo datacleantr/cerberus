@@ -10,6 +10,7 @@ import {
   partitionRows,
   pgErrorCode,
   normalizeMoney,
+  normalizeOrderDate,
   type ImportRowProblem,
 } from "@/lib/importValidation";
 
@@ -22,6 +23,10 @@ function describeRowError(error: unknown): string {
   if (code === "23505") return "Mükerrer kayıt: bu mağazada aynı Orderno + ASIN ikilisi zaten kayıtlı.";
   if (code === "23503") return "Başvuru hatası: satırdaki bir kod veritabanında tanımlı değil.";
   if (code === "23514") return "Satır değerleri veritabanı kurallarını ihlal etti.";
+  // Drizzle'ın dış mesajı sorgu metnini tekrarlar ("Failed query: insert into...");
+  // asıl neden sürücünün eklediği `cause.message` içindedir — o varsa onu göster.
+  const causeMessage = (error as { cause?: { message?: string } } | null)?.cause?.message;
+  if (causeMessage) return causeMessage.slice(0, 200);
   return error instanceof Error ? error.message.slice(0, 200) : "Bilinmeyen hata.";
 }
 
@@ -148,6 +153,7 @@ export async function POST(req: Request) {
               normalizeMoney(r.correctedCost) ?? Number(totalCost)
             );
             const refundAmount = String(normalizeMoney(r.refundAmount) ?? 0);
+            const orderDate = normalizeOrderDate(r.orderDate);
 
             const { productId } = await resolveProduct(inner, {
               asin: rowAsin,
@@ -164,7 +170,7 @@ export async function POST(req: Request) {
               supplierCode: r.supplierCode,
               supplierUrl: r.supplierUrl,
               unitCost,
-              observedAt: r.orderDate,
+              observedAt: orderDate,
               sourceType: "XLS_IMPORT",
             });
 
@@ -173,7 +179,7 @@ export async function POST(req: Request) {
               .values({
                 productId,
                 buyerStore,
-                orderDate: r.orderDate || new Date().toISOString().split("T")[0],
+                orderDate,
                 imageUrl: r.imageUrl || "https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=200&auto=format&fit=crop&q=80",
                 fulfillmentType: r.fulfillmentType || "FBA",
                 productTitle: r.productTitle || "Amazon Ürünü",
@@ -233,14 +239,22 @@ export async function POST(req: Request) {
       }
     });
 
-    const skippedCount = skippedRows.length;
+    // "problems" (ASIN/Orderno boş, enum hatası, mağaza kodu vb.) DB aşamasına
+    // hiç ulaşmayan satırlardır; "skippedRows" DB aşamasında başarısız olanlardır.
+    // İkisi de kullanıcıya raporlanmalı — yoksa "180 satır eklendi" denip geri
+    // kalan yüzlerce satırın neden atlandığı sessizce kaybolur.
+    const allSkipped: Array<ImportRowProblem & { reason: string }> = [
+      ...problems.map((p) => ({ ...p, reason: "pre_validation" })),
+      ...skippedRows,
+    ].sort((a, b) => a.row - b.row);
+    const skippedCount = allSkipped.length;
 
     // ── Hiç kayıt giremediyse BAŞARI DEĞİL, HATA ──
     // Tüm geçerli satırların DB aşamasında başarısız olması (ör. hepsi
     // mükerrer) 200 + "0 adet başarıyla kaydedildi" olarak gösterilemez;
     // 400 + anlaşılır hata + satır bazlı details döner.
     if (insertedOrders.length === 0) {
-      const first = skippedRows[0];
+      const first = allSkipped[0];
       await db.insert(auditLogs).values({
         actorName,
         storeCode: scopedStore === "ALL" ? "HRN" : scopedStore,
@@ -252,12 +266,12 @@ export async function POST(req: Request) {
       });
       return NextResponse.json(
         {
-          error: `İçe aktarılamadı: ${rows.length} satırdan hiçbiri kaydedilemedi. ${skippedCount} satır veritabanı aşamasında başarısız oldu. İlk sorun: ${first.row}. satır — ${first.field}: ${first.message}`,
+          error: `İçe aktarılamadı: ${rows.length} satırdan hiçbiri kaydedilemedi. ${skippedCount} satır atlandı. İlk sorun: ${first.row}. satır — ${first.field}: ${first.message}`,
           code: "NO_ROWS_INSERTED",
           importedCount: 0,
           skippedCount,
-          skipped: skippedRows.slice(0, 100),
-          details: skippedRows.slice(0, 100),
+          skipped: allSkipped.slice(0, 100),
+          details: allSkipped.slice(0, 100),
           createdStores,
         },
         { status: 400 }
@@ -286,7 +300,7 @@ export async function POST(req: Request) {
       message,
       importedCount: insertedOrders.length,
       skippedCount,
-      skipped: skippedRows.slice(0, 100),
+      skipped: allSkipped.slice(0, 100),
       createdStores,
     });
   } catch (error: unknown) {

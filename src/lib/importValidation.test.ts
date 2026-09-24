@@ -13,6 +13,7 @@ import {
   detectDuplicatePairs,
   partitionRows,
   normalizeMoney,
+  normalizeOrderDate,
   CARGO_STATUSES,
 } from "./importValidation";
 
@@ -154,5 +155,31 @@ describe("normalizeMoney — sayıya çevrilemeyenler sorun üretir", () => {
   it("geçersiz değer null döner", () => {
     expect(normalizeMoney("abc")).toBeNull();
     expect(normalizeMoney("-5")).toBeNull();
+  });
+});
+
+describe("normalizeOrderDate — bozuk Excel serial sayısı Postgres'i patlatmaz", () => {
+  it("geçerli YYYY-MM-DD olduğu gibi kalır", () => {
+    expect(normalizeOrderDate("2024-03-15")).toBe("2024-03-15");
+  });
+
+  it("çıplak Excel serial sayısı (ör. 44281) bugüne düşer, 'yıl 44281' olmaz", () => {
+    // new Date("44281") JS'de "yıl 44281" olarak parse edilir ve Postgres
+    // timestamp sütununda 22009 (time zone displacement out of range) hatası verir.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(normalizeOrderDate("44281")).toBe(today);
+  });
+
+  it("boş/null/tanımsız bugüne düşer", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    expect(normalizeOrderDate("")).toBe(today);
+    expect(normalizeOrderDate(null)).toBe(today);
+    expect(normalizeOrderDate(undefined)).toBe(today);
+  });
+
+  it("makul olmayan yıl (ör. 1899 veya 2200) bugüne düşer", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    expect(normalizeOrderDate("1899-12-30")).toBe(today);
+    expect(normalizeOrderDate("2200-01-01")).toBe(today);
   });
 });

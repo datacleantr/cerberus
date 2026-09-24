@@ -10,6 +10,23 @@ export const CARGO_STATUSES = ["Yolda", "Tam Geldi", "İPTAL", "Kayıp Depoya ge
 export const FULFILLMENT_TYPES = ["FBA", "FBM"] as const;
 export const PSH_STATUSES = ["BEKLIYOR", "BATCH_OLUSTURULDU", "DEPO_SAYILDI", "AMAZONA_SEVK"] as const;
 export const INVENTORY_LAB_STATUSES = ["GIRILMEDI", "GIRILDI", "AKTIF_SATISTA"] as const;
+/**
+ * XLS/CSV'den gelen sipariş tarihini doğrular. Excel serial sayısının
+ * (ör. "44281") yanlışlıkla ham metin olarak sızması ya da başka bozuk bir
+ * değer, `orders.orderDate` (TEXT) sütununa çöp yazmak veya `resolveProduct`
+ * içinde `new Date()`'in "yıl 44281" gibi absürt bir tarihe sapıp Postgres
+ * timestamp'ini patlatması yerine, geçersizse bugüne düşer.
+ */
+export function normalizeOrderDate(raw: unknown): string {
+  const today = () => new Date().toISOString().slice(0, 10);
+  const s = String(raw ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return today();
+  const year = Number(s.slice(0, 4));
+  if (year < 2000 || year > new Date().getUTCFullYear() + 1) return today();
+  const d = new Date(`${s}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? today() : s;
+}
+
 export function normalizeMoney(raw: unknown): number | null {
   if (raw == null) return null; if (typeof raw === "number") return Number.isFinite(raw)&&raw>=0?raw:null;
   let s=String(raw).trim().replace(/[$€£₺\u00a0\s]/g,""); if(!s)return null;

@@ -141,11 +141,23 @@ export async function resolveProduct(
   const price = Number(String(input.unitCost ?? "").replace(",", "."));
 
   if (Number.isFinite(price) && price >= 0 && input.unitCost != null) {
-    const observedAt = input.observedAt
+    let observedAt = input.observedAt
       ? input.observedAt instanceof Date
         ? input.observedAt
         : new Date(input.observedAt)
       : new Date();
+
+    // Kaynak veri bozuksa (ör. Excel serial sayısı yanlışlıkla "yıl 44281" gibi
+    // yorumlanırsa) Postgres timestamp'i patlatmadan makul bir tarihe düş.
+    const OBSERVED_AT_MIN_YEAR = 2000;
+    const observedAtYear = observedAt.getUTCFullYear();
+    if (
+      Number.isNaN(observedAt.getTime()) ||
+      observedAtYear < OBSERVED_AT_MIN_YEAR ||
+      observedAtYear > new Date().getUTCFullYear() + 1
+    ) {
+      observedAt = new Date();
+    }
 
     if (!Number.isNaN(observedAt.getTime())) {
       const supplierName = String(input.supplierName ?? "").trim() || "BİLİNMEYEN";

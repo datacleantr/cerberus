@@ -14,6 +14,7 @@ import {
   Trash2,
   Edit3,
 } from "lucide-react";
+import { excelCellToDateStr } from "@/lib/excelDate";
 
 interface GoogleDriveXlsImportModalProps {
   isOpen: boolean;
@@ -69,7 +70,7 @@ export function GoogleDriveXlsImportModal({
 
       parsed.push({
         buyerStore: String(cols[0] || store).trim() || store,
-        orderDate: String(cols[1] || new Date().toISOString().split("T")[0]).trim(),
+        orderDate: excelCellToDateStr(cols[1]) || new Date().toISOString().split("T")[0],
         imageUrl: String(cols[2] || "").trim(),
         fulfillmentType: String(cols[3] || "FBA").trim(),
         productTitle: productTitle || "Excel Siparişi",
@@ -126,7 +127,7 @@ export function GoogleDriveXlsImportModal({
         // ~800 KB'lık ayrıştırıcı yalnızca dosya yüklendiğinde gelir (bundle bölmesi)
         const XLSX = await import("xlsx");
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: true });
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
         const rawMatrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, {
           header: 1,

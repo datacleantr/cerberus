@@ -181,6 +181,23 @@ describe("POST /api/orders/import-xls — sıfır kayıt ve kısmi başarı", ()
     expect(body.message).toContain("1 hatalı satır atlandı");
   });
 
+  it("kısmi başarıda DOĞRULAMADA elenen satırlar da skipped listesinde raporlanır (sessizce kaybolmaz)", async () => {
+    // Regresyon: partitionRows'un elediği satırlar (ör. ASIN boş) yalnızca
+    // "validRows.length === 0" durumunda değil, en az bir satır başarıyla
+    // eklendiğinde de kullanıcıya raporlanmalı.
+    const res = await POST(makeRequest([makeRow(1), { ...makeRow(2), asin: "" }]));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.importedCount).toBe(1);
+    expect(body.skippedCount).toBe(1);
+    expect(body.skipped).toHaveLength(1);
+    expect(body.skipped[0].row).toBe(2);
+    expect(body.skipped[0].reason).toBe("pre_validation");
+    expect(body.skipped[0].field).toBe("ASIN");
+    expect(body.message).toContain("1 hatalı satır atlandı");
+  });
+
   it("tüm satırlar doğrulamada elenirse mevcut 400 + details davranışı korunur", async () => {
     const res = await POST(
       makeRequest([{ ...makeRow(1), asin: "" }, { ...makeRow(2), orderNumber: "" }])
