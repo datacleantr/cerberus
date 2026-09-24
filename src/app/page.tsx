@@ -8,6 +8,7 @@ import { NewOrderModal } from "@/components/NewOrderModal";
 import { GoogleDriveXlsImportModal } from "@/components/GoogleDriveXlsImportModal";
 import { PshBatchModal } from "@/components/PshBatchModal";
 import { WarehouseReconciliationModal } from "@/components/WarehouseReconciliationModal";
+import { PrepShipImportModal } from "@/components/PrepShipImportModal";
 import { AdminDashboard } from "@/components/AdminDashboard";
 import { ProductMasterDrawer } from "@/components/ProductMasterDrawer";
 import { ProductPortfolio } from "@/features/products/ProductPortfolio";
@@ -33,7 +34,7 @@ import {
 } from "@/features/operations/OperationsPanels";
 import { downloadFilteredOrdersCsv } from "@/features/orders/ordersCsv";
 import { clientLog } from "@/lib/clientLogger";
-import type { OrderView, ProductMasterView, ProductView, TabId } from "@/features/types";
+import type { BatchView, OrderView, ProductMasterView, ProductView, TabId } from "@/features/types";
 
 /** Her sekmenin üst çubukta gösterilecek başlık ve açıklaması */
 const PAGE_META: Record<TabId, { title: string; subtitle: string }> = {
@@ -140,6 +141,7 @@ export default function CerberusApp() {
   const [isXlsImportOpen, setIsXlsImportOpen] = useState(false);
   const [isPshBatchOpen, setIsPshBatchOpen] = useState(false);
   const [isWarehouseReconOpen, setIsWarehouseReconOpen] = useState(false);
+  const [prepShipImportBatch, setPrepShipImportBatch] = useState<BatchView | null>(null);
 
   const isAdmin = currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
   const isStoreLocked = Boolean(
@@ -214,6 +216,45 @@ export default function CerberusApp() {
     },
     [applyMasterPatch, refresh]
   );
+
+  // Inventory Lab / PrepShip köprüsü — Adım 1/2 (denetim raporu §13).
+  // Önce batch durumu hiçbir yerden ilerletilemiyordu (panelde ölü kod
+  // yoluydu); artık gerçek PATCH ile ilerliyor ve Amazona sevk sonrası
+  // Inventory Lab'a CSV dışa aktarım tetiklenebiliyor.
+  const handleAdvanceBatchStatus = useCallback(
+    async (batch: { batchNumber: string }, nextStatus: string) => {
+      setActionError(null);
+      try {
+        const res = await fetch(`/api/batches/${encodeURIComponent(batch.batchNumber)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: nextStatus }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || "Batch durumu güncellenemedi.");
+        }
+        await refresh();
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : "Batch durumu güncellenemedi.");
+      }
+    },
+    [refresh]
+  );
+
+  const handleExportInventoryLab = useCallback(
+    (batch: { batchNumber: string }) => {
+      window.open(`/api/batches/${encodeURIComponent(batch.batchNumber)}/inventory-lab-export`, "_blank");
+      // Sunucu senkron/durum alanlarını hemen güncellediği için kısa bir
+      // gecikmeyle listeyi tazeliyoruz (indirme yeni sekmede açılır, burada beklemez).
+      setTimeout(() => { void refresh(); }, 1500);
+    },
+    [refresh]
+  );
+
+  const handleExportPrepShip = useCallback((batch: { batchNumber: string }) => {
+    window.open(`/api/batches/${encodeURIComponent(batch.batchNumber)}/prepship-export`, "_blank");
+  }, []);
 
   const handleExportCsv = useCallback(async () => {
     setExportingCsv(true);
@@ -394,6 +435,10 @@ export default function CerberusApp() {
               batches={batches}
               orders={orders}
               onCreate={() => setIsPshBatchOpen(true)}
+              onAdvanceStatus={handleAdvanceBatchStatus}
+              onExportInventoryLab={handleExportInventoryLab}
+              onExportPrepShip={handleExportPrepShip}
+              onImportPrepShip={(batch) => setPrepShipImportBatch(batch)}
             />
           )}
 
@@ -479,6 +524,16 @@ export default function CerberusApp() {
         onSaved={refresh}
         orders={filteredOrders}
       />
+
+      {prepShipImportBatch && (
+        <PrepShipImportModal
+          isOpen={Boolean(prepShipImportBatch)}
+          onClose={() => setPrepShipImportBatch(null)}
+          onImported={refresh}
+          batchNumber={prepShipImportBatch.batchNumber}
+          batchTitle={prepShipImportBatch.title}
+        />
+      )}
     </div>
   );
 }

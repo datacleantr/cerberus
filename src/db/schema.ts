@@ -468,7 +468,7 @@ export const orders = pgTable(
     ('BEKLIYOR', 'BATCH_OLUSTURULDU', 'DEPO_SAYILDI', 'AMAZONA_SEVK')`),
   check("orders_inventory_lab_status_enum", sql`${t.inventoryLabStatus} in
     ('GIRILMEDI', 'GIRILDI', 'AKTIF_SATISTA')`),
-  check("orders_fulfillment_type_enum", sql`${t.fulfillmentType} in ('FBA', 'FBM')`),
+  check("orders_fulfillment_type_enum", sql`${t.fulfillmentType} in ('FBA', 'FBM', 'RETURN', 'REMOVAL_ORDER')`),
 ]);
 
 // 7. PSH Batch Master Table (PSH Programı Ön-Envanter Gruplama)

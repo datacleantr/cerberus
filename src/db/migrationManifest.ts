@@ -4,7 +4,7 @@
  * migrationManifest.test.ts journal ve SQL hash'iyle drift'i yakalar.
  */
 export const MIGRATION_MANIFEST = {
-  count: 8,
-  latestTag: "0007_icy_payback",
-  latestHash: "7bc6bb4de2f75779d6081aa1f1a4a1855ac13ab9db7e1fff620dae5b8471b5cd",
+  count: 9,
+  latestTag: "0008_previous_tiger_shark",
+  latestHash: "ba00e8afa72a4dc6631426c6b44baf426585fa7ab3c78d3fa14c69fc7d0f23e2",
 } as const;

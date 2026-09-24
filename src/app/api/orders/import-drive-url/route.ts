@@ -4,7 +4,7 @@ import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { parseBody, driveUrlSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { readResponseBytesWithLimit } from "@/lib/httpSafety";
-import { excelCellToDateStr } from "@/lib/excelDate";
+import { parseXlsMatrix } from "@/lib/xlsRowMapping";
 
 function extractSpreadsheetId(url: string): string | null {
   const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -95,58 +95,11 @@ export async function POST(req: Request) {
 
     // First row is headers
     const headers = rawMatrix[0].map((h: any) => String(h || "").trim());
-    const dataRows = rawMatrix.slice(1);
-
-    const parsedRows = [];
-
-    for (const cols of dataRows) {
-      if (!cols || cols.length < 3) continue;
-      const productTitle = String(cols[4] || cols[2] || "").trim();
-      const orderNumber = String(cols[11] || cols[5] || "").trim();
-      if (!productTitle && !orderNumber) continue;
-
-      parsedRows.push({
-        buyerStore: String(cols[0] || defaultStore).trim() || defaultStore,
-        orderDate: excelCellToDateStr(cols[1]) || new Date().toISOString().split("T")[0],
-        imageUrl: String(cols[2] || "").trim(),
-        fulfillmentType: String(cols[3] || "FBA").trim(),
-        productTitle: productTitle || "Google Drive Ürünü",
-        asin: String(cols[5] || "").trim().toUpperCase(),
-        msku: String(cols[6] || "").trim(),
-        supplierName: String(cols[7] || "THE VITAMINSHOPPE").trim(),
-        supplierCode: String(cols[8] || "A198").trim(),
-        supplierUrl: String(cols[9] || "").trim(),
-        amazonUrl: String(cols[10] || "").trim(),
-        orderNumber: orderNumber || `WO-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        driveLink: String(cols[12] || driveUrl).trim(),
-        packCount: Number(cols[13]) || 1,
-        quantity: Number(cols[14]) || 1,
-        unitCost: String(cols[15] || "0").replace(",", "."),
-        sellingPrice: String(cols[16] || "0").replace(",", "."),
-        totalCost: String(cols[17] || "0").replace(",", "."),
-        orderEmail: String(cols[18] || "").trim(),
-        cargoStatus: String(cols[19] || "Tam Geldi").trim(),
-        shippedToAmazon: Number(cols[20]) || 0,
-        p1CancelQty: Number(cols[21]) || 0,
-        p2MissingQty: Number(cols[22]) || 0,
-        p3DefectiveQty: Number(cols[23]) || 0,
-        p4ExpiredQty: Number(cols[24]) || 0,
-        problemAction: String(cols[25] || "").trim(),
-        problemResult: String(cols[26] || "").trim(),
-        refundAmount: String(cols[27] || "0").replace(",", "."),
-        creditCard: String(cols[28] || "").trim(),
-        isFragile: String(cols[29] || "NO").trim(),
-        isMultiPack: String(cols[30] || "NO").trim(),
-        isBundle: String(cols[31] || "NO").trim(),
-        condition: String(cols[33] || "New").trim(),
-        brandName: String(cols[34] || "General").trim(),
-        description1: String(cols[35] || "").trim(),
-        description2: String(cols[36] || "").trim(),
-        auditNote: String(cols[37] || "").trim(),
-        periodCode: String(cols[38] || "Ş26").trim(),
-        correctedCost: String(cols[39] || cols[17] || "0").replace(",", "."),
-      });
-    }
+    const parsedRows = parseXlsMatrix(rawMatrix, {
+      defaultStore,
+      defaultProductTitle: "Google Drive Ürünü",
+      defaultDriveLink: driveUrl,
+    });
 
     return NextResponse.json({
       message: `Google Drive tablosundan (${firstSheetName}) ${parsedRows.length} adet sipariş ayrıştırıldı.`,
