@@ -12,6 +12,7 @@ import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { calculateLandedCostAndProfit, computeDecisionEngine } from "@/domain/decisionEngine";
 import { buildMorningBriefing } from "@/domain/briefing";
 import { computeRealizedRoi, computeRoiVariance } from "@/domain/realizedRoi";
+import { computeResearcherScorecards } from "@/domain/researcherScorecard";
 import { computeFreshness, summarizeFreshness } from "@/domain/dataFreshness";
 import { parseBody, intelligenceCreateSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
@@ -115,25 +116,35 @@ export async function GET(req: Request) {
       else rowsByAsin.set(key, [r]);
     }
 
+    // Her ASIN için bir kez hesapla, hem ürün kartlarında hem araştırmacı
+    // skor kartında yeniden kullan (çift hesap yok).
+    const realizedRoiByAsin = new Map<string, ReturnType<typeof computeRealizedRoi>>();
+    for (const [asinKey, rowsForAsin] of rowsByAsin) {
+      realizedRoiByAsin.set(
+        asinKey,
+        computeRealizedRoi(
+          rowsForAsin.map((r) => ({
+            quantity: Number(r.quantity) || 0,
+            unitCost: Number(r.unitCost) || 0,
+            sellingPrice: Number(r.sellingPrice) || 0,
+            totalCost: Number(r.totalCost) || 0,
+            shippedToAmazon: Number(r.shippedToAmazon) || 0,
+            p1CancelQty: Number(r.p1CancelQty) || 0,
+            p2MissingQty: Number(r.p2MissingQty) || 0,
+            p3DefectiveQty: Number(r.p3DefectiveQty) || 0,
+            p4ExpiredQty: Number(r.p4ExpiredQty) || 0,
+            refundAmount: Number(r.refundAmount) || 0,
+            cargoStatus: r.cargoStatus || "",
+          }))
+        )
+      );
+    }
+
     const { getThresholds } = await import("@/lib/settings");
     const thresholds = await getThresholds();
     const enrichedMasters = masters.map((m) => {
       const asinKey = (m.asin || "").toUpperCase();
-      const realized = computeRealizedRoi(
-        (rowsByAsin.get(asinKey) || []).map((r) => ({
-          quantity: Number(r.quantity) || 0,
-          unitCost: Number(r.unitCost) || 0,
-          sellingPrice: Number(r.sellingPrice) || 0,
-          totalCost: Number(r.totalCost) || 0,
-          shippedToAmazon: Number(r.shippedToAmazon) || 0,
-          p1CancelQty: Number(r.p1CancelQty) || 0,
-          p2MissingQty: Number(r.p2MissingQty) || 0,
-          p3DefectiveQty: Number(r.p3DefectiveQty) || 0,
-          p4ExpiredQty: Number(r.p4ExpiredQty) || 0,
-          refundAmount: Number(r.refundAmount) || 0,
-          cargoStatus: r.cargoStatus || "",
-        }))
-      );
+      const realized = realizedRoiByAsin.get(asinKey) ?? computeRealizedRoi([]);
 
       const variance = computeRoiVariance(Number(m.roiPercent), realized.realizedRoiPercent);
 
@@ -197,10 +208,29 @@ export async function GET(req: Request) {
       }
     );
 
+    // T.Faz1 — araştırmacı skor kartı artık seed sabitlerinden değil,
+    // gerçek product_masters + sipariş verisinden hesaplanır (bkz.
+    // src/domain/researcherScorecard.ts).
+    const researcherScorecards = computeResearcherScorecards(
+      team.map((r) => ({
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        specialtyDomain: r.specialtyDomain,
+        avatar: r.avatar,
+      })),
+      masters.map((m) => ({
+        researcherCode: m.researcherCode,
+        asin: m.asin,
+        decisionAction: m.decisionAction,
+      })),
+      realizedRoiByAsin
+    );
+
     return NextResponse.json({
       storeScope: effectiveStore,
       productMasters: enrichedMasters,
-      researchers: team,
+      researchers: researcherScorecards,
       researchSessions: sessions,
       morningBriefing,
     });

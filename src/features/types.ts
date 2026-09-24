@@ -139,12 +139,21 @@ export interface ResearcherView {
   name: string;
   specialtyDomain: string;
   discoveryVolume: number;
-  approvalRate: string;
-  averageRoi: string;
-  averageNetProfit: string;
-  problemRate: string;
-  researcherScore: number;
+  /** REJECT olmayan karar oranı (0-100); kayıt yoksa null */
+  approvalRate: number | null;
+  /** En az bir gerçek siparişe dönüşen ürün oranı (0-100); ölçülemiyorsa null */
+  purchaseConversion: number | null;
+  /** Gerçekleşen ROI ortalaması; hiç ürün ölçülmediyse null */
+  averageRoi: number | null;
+  /** Gerçekleşen net kâr toplamı ($); hiç ürün ölçülmediyse null */
+  averageNetProfit: number | null;
+  /** Fire oranı (0-100); ölçülemiyorsa null */
+  problemRate: number | null;
+  /** Kalite-ayarlı bileşik skor (0-100); gerçek sipariş ölçümü yoksa null */
+  researcherScore: number | null;
   activeListingsCount: number;
+  /** researcherScore'un dayandığı ölçülmüş ürün sayısı — güven göstergesi */
+  measuredProductCount: number;
   avatar?: string | null;
 }
 
