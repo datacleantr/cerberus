@@ -28,6 +28,7 @@
  */
 
 import { computeFreshness } from "./dataFreshness";
+import { estimateAmazonFees } from "./amazonFees";
 
 export interface StoreHealthOrderFact {
   buyerStore: string;
@@ -42,6 +43,8 @@ export interface StoreHealthOrderFact {
   refundAmount: number;
   cargoStatus: string;
   sellingPrice: number;
+  /** 'FBA'|'FBM'|... — verilmezse FBA varsayılır (bkz. amazonFees.ts) */
+  fulfillmentType?: string | null;
 }
 
 export interface StoreHealthIdentity {
@@ -57,6 +60,8 @@ export interface WeekMetrics {
   spend: number;
   shippedUnits: number;
   refundAmount: number;
+  /** Tahmini Amazon referral+fulfillment ücreti (bkz. amazonFees.ts) — netProfit'ten zaten düşülmüştür */
+  estimatedAmazonFees: number;
   netProfit: number;
   /** null: bu pencerede adet yok, sevk oranı ölçülemez */
   fulfillmentRate: number | null;
@@ -131,6 +136,7 @@ function emptyWeekMetrics(weekKey: string): WeekMetrics {
     spend: 0,
     shippedUnits: 0,
     refundAmount: 0,
+    estimatedAmazonFees: 0,
     netProfit: 0,
     fulfillmentRate: null,
     problemRate: null,
@@ -146,13 +152,21 @@ function aggregateWeek(weekKey: string, rows: StoreHealthOrderFact[]): WeekMetri
   let shipped = 0;
   let refund = 0;
   let revenue = 0;
+  let amazonFees = 0;
   let problemOrders = 0;
   for (const o of rows) {
     units += Number(o.quantity) || 0;
     spend += Number(o.totalCost) || 0;
     shipped += Number(o.shippedToAmazon) || 0;
     refund += Number(o.refundAmount) || 0;
-    revenue += (Number(o.shippedToAmazon) || 0) * (Number(o.sellingPrice) || 0);
+    const shippedQty = Number(o.shippedToAmazon) || 0;
+    const price = Number(o.sellingPrice) || 0;
+    revenue += shippedQty * price;
+    // Amazon'un kestiği pay yalnız gelir üreten (sevk edilmiş) adet
+    // üzerinden tahmin edilir (bkz. amazonFees.ts, N-3 düzeltmesi).
+    if (shippedQty > 0) {
+      amazonFees += shippedQty * estimateAmazonFees({ sellingPrice: price, fulfillmentType: o.fulfillmentType }).totalFeeAmount;
+    }
     const isProblem =
       o.cargoStatus === "İPTAL" ||
       o.p1CancelQty > 0 ||
@@ -163,6 +177,7 @@ function aggregateWeek(weekKey: string, rows: StoreHealthOrderFact[]): WeekMetri
     if (isProblem) problemOrders++;
   }
   const effectiveCost = Math.max(0, spend - refund);
+  const roundedFees = round2(amazonFees);
 
   return {
     weekKey,
@@ -171,7 +186,8 @@ function aggregateWeek(weekKey: string, rows: StoreHealthOrderFact[]): WeekMetri
     spend: round2(spend),
     shippedUnits: shipped,
     refundAmount: round2(refund),
-    netProfit: round2(revenue - effectiveCost),
+    estimatedAmazonFees: roundedFees,
+    netProfit: round2(revenue - effectiveCost - roundedFees),
     fulfillmentRate: units > 0 ? round1((shipped / units) * 100) : null,
     problemRate: rows.length > 0 ? round1((problemOrders / rows.length) * 100) : null,
     refundRate: spend > 0 ? round1((refund / spend) * 100) : null,

@@ -132,4 +132,18 @@ describe("computeWeeklyStoreHealth", () => {
     expect(sel.isActiveThisWeek).toBe(false);
     expect(sel.healthScore).toBeNull();
   });
+
+  it("N-3 uzantısı: net kâr artık Amazon ücretini düşer (eskiden hiç düşmüyordu)", () => {
+    // 10 adet * $20, gelir $200, tedarikçi maliyeti $100, ücret 10*(20*%15+4.15)=$71.50
+    const results = computeWeeklyStoreHealth(IDENTITIES, [order()], NOW);
+    const hrn = results[0];
+    expect(hrn.currentWeek.estimatedAmazonFees).toBe(71.5);
+    expect(hrn.currentWeek.netProfit).toBe(28.5);
+  });
+
+  it("FBM siparişte Amazon fulfillment ücreti alınmaz", () => {
+    const results = computeWeeklyStoreHealth(IDENTITIES, [order({ fulfillmentType: "FBM" })], NOW);
+    // yalnız referral: 10 * $20 * %15 = $30
+    expect(results[0].currentWeek.estimatedAmazonFees).toBe(30);
+  });
 });

@@ -23,13 +23,15 @@ function row(over: Partial<RealizedOrderFacts> = {}): RealizedOrderFacts {
 }
 
 describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", () => {
-  it("temel senaryo: 10 adet sevk, $200 gelir, $100 maliyet -> %100 ROI", () => {
+  it("temel senaryo: 10 adet sevk, $200 gelir, $100 maliyet, Amazon ücreti düşülür", () => {
+    // Ücret: 10 adet * (referral %15*$20 + FBA fulfillment $4.15) = 10 * $7.15 = $71.50
     const r = computeRealizedRoi([row()]);
     expect(r.realizedUnits).toBe(10);
     expect(r.realizedRevenue).toBe(200);
     expect(r.realizedCost).toBe(100);
-    expect(r.realizedNetProfit).toBe(100);
-    expect(r.realizedRoiPercent).toBe(100);
+    expect(r.estimatedAmazonFees).toBe(71.5);
+    expect(r.realizedNetProfit).toBe(28.5);
+    expect(r.realizedRoiPercent).toBe(16.62);
   });
 
   it("hiç sipariş yoksa ROI null döner — sıfır DEĞİL", () => {
@@ -53,12 +55,13 @@ describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", 
     expect(r.reason).toBe("NOTHING_SHIPPED");
   });
 
-  it("tedarikçi iadesi geliri değil net maliyeti azaltır", () => {
+  it("tedarikçi iadesi geliri değil net maliyeti azaltır (Amazon ücreti hâlâ ayrıca düşülür)", () => {
     const r = computeRealizedRoi([row({ refundAmount: 50 })]);
     expect(r.realizedRevenue).toBe(200);
     expect(r.realizedCost).toBe(50);
-    expect(r.realizedNetProfit).toBe(150);
-    expect(r.realizedRoiPercent).toBe(300);
+    expect(r.estimatedAmazonFees).toBe(71.5);
+    expect(r.realizedNetProfit).toBe(78.5);
+    expect(r.realizedRoiPercent).toBe(64.61);
     expect(r.totalRefunds).toBe(50);
   });
 
@@ -71,7 +74,9 @@ describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", 
     expect(r.realizedRevenue).toBe(120);
     // Maliyetin tamamı sayılır: harcanan para geri gelmedi
     expect(r.realizedCost).toBe(100);
-    expect(r.realizedRoiPercent).toBe(20);
+    // Amazon ücreti yalnız sevk edilmiş (gelir üreten) 6 adet üzerinden alınır
+    expect(r.estimatedAmazonFees).toBe(42.9);
+    expect(r.realizedRoiPercent).toBe(-16.03);
   });
 
   it("sevk adedi sipariş adedini aşamaz (veri girişi hatasına dayanıklı)", () => {
@@ -96,8 +101,8 @@ describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", 
     const r = computeRealizedRoi([
       row({ sellingPrice: 5, totalCost: 200, shippedToAmazon: 10 }),
     ]);
-    expect(r.realizedNetProfit).toBe(-150);
-    expect(r.realizedRoiPercent).toBe(-75);
+    expect(r.realizedNetProfit).toBe(-199);
+    expect(r.realizedRoiPercent).toBe(-79.92);
   });
 
   it("negatif/bozuk girdiler sıfıra kırpılır", () => {
@@ -106,6 +111,25 @@ describe("computeRealizedRoi — gerçekleşen ROI siparişlerden hesaplanır", 
     ]);
     expect(r.realizedUnits).toBe(0);
     expect(r.totalRefunds).toBe(0);
+  });
+});
+
+describe("computeRealizedRoi — Amazon ücreti farkındalığı (N-3 uzantısı)", () => {
+  it("FBM siparişte fulfillment ücreti alınmaz, yalnız referral düşülür", () => {
+    const r = computeRealizedRoi([row({ fulfillmentType: "FBM" })]);
+    // 10 adet * $20 * %15 referral = $30, fulfillment yok
+    expect(r.estimatedAmazonFees).toBe(30);
+  });
+
+  it("bilinen kategori verilirse referral oranı kategoriye göre değişir", () => {
+    const r = computeRealizedRoi([row({ category: "Jewelry" })]);
+    // 10 adet * ($20*%20 referral + $4.15 FBA fulfillment) = 10 * $8.15 = $81.5
+    expect(r.estimatedAmazonFees).toBe(81.5);
+  });
+
+  it("iptal edilen sipariş için Amazon ücreti de alınmaz (gelir yok)", () => {
+    const r = computeRealizedRoi([row({ cargoStatus: "İPTAL" })]);
+    expect(r.estimatedAmazonFees).toBe(0);
   });
 });
 

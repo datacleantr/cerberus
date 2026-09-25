@@ -5,7 +5,7 @@ import { Loader2, AlertTriangle, TrendingUp, TrendingDown, DollarSign, Package, 
 
 interface Kpis {
   totalOrders: number; totalUnits: number; totalSpend: number; totalShipped: number; fulfillmentRate: number;
-  totalRefunds: number; refundRate: number; netRevenue: number; grossProfit: number; avgUnitCost: number;
+  totalRefunds: number; refundRate: number; netRevenue: number; estimatedAmazonFees: number; netProfit: number; avgUnitCost: number;
   problemRate: number; p1: number; p2: number; p3: number; p4: number; unbatchedCount: number; inTransitCount: number;
 }
 interface TrendPoint { period: string; orders: number; units: number; spend: number; shipped: number; refunds: number; netProfit: number; }
@@ -84,8 +84,8 @@ export function DecisionSupportDashboard({ storeCode }: { storeCode: string }) {
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
         <div className="rounded-2xl border border-line bg-surface-1 p-3">
           <div className="text-[10px] font-mono-tech uppercase tracking-widest text-ink-faint flex items-center gap-1"><DollarSign className="h-3 w-3" /> Net Kâr</div>
-          <div className={`mt-1 text-lg font-bold tabular ${kpis.grossProfit >= 0 ? "text-positive" : "text-danger"}`}>${kpis.grossProfit.toLocaleString("tr-TR")}</div>
-          <div className="text-[11px] font-mono-tech text-ink-faint">Gelir ${kpis.netRevenue.toLocaleString("tr-TR")} • Harcama ${kpis.totalSpend.toLocaleString("tr-TR")}</div>
+          <div className={`mt-1 text-lg font-bold tabular ${kpis.netProfit >= 0 ? "text-positive" : "text-danger"}`}>${kpis.netProfit.toLocaleString("tr-TR")}</div>
+          <div className="text-[11px] font-mono-tech text-ink-faint">Gelir ${kpis.netRevenue.toLocaleString("tr-TR")} • Harcama ${kpis.totalSpend.toLocaleString("tr-TR")} • Tahmini Amazon ücreti ${kpis.estimatedAmazonFees.toLocaleString("tr-TR")}</div>
         </div>
         <div className="rounded-2xl border border-line bg-surface-1 p-3">
           <div className="text-[10px] font-mono-tech uppercase tracking-widest text-ink-faint flex items-center gap-1"><Package className="h-3 w-3" /> Sipariş / Adet</div>

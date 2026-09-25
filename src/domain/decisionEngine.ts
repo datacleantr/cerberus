@@ -3,23 +3,40 @@
  * İş kurallarının birim testi burada yapılır; route yalnızca IO katmanıdır.
  */
 
+import { estimateAmazonFees, type FeeProvenance } from "./amazonFees";
+
 export interface LandedCostResult {
   marketplaceFee: number;
   fulfillmentFee: number;
   landedCost: number;
   estimatedNetProfit: number;
   roiPercent: number;
+  /** Ücret tahmininin dayanağı — CATEGORY_MATCHED: gerçek kategoriden, DEFAULT_ASSUMED: sabit varsayım (bkz. amazonFees.ts) */
+  feeProvenance: FeeProvenance;
+  feeBasis: string;
 }
 
+/**
+ * DENETİM BULGUSU N-3 (P0) — DÜZELTİLDİ: pazaryeri ücreti artık kategoriye
+ * göre `src/domain/amazonFees.ts`'ten gelir (eşleşme yoksa dürüstçe
+ * DEFAULT_ASSUMED %15); fulfillment ücreti `fulfillmentType` okunur — FBM'de
+ * sıfırdır (Amazon kargolamıyor). `category`/`fulfillmentType` verilmezse
+ * önceki davranışla birebir aynı sonucu üretir (DEFAULT_ASSUMED + FBA
+ * varsayımı), böylece bu iki alanı henüz bilmeyen çağıranlar kırılmaz.
+ */
 export function calculateLandedCostAndProfit(
   sourcePrice: number,
   sellingPrice: number,
-  prepCost = 1.35
+  prepCost = 1.35,
+  options?: { category?: string | null; fulfillmentType?: string | null }
 ): LandedCostResult {
-  const marketplaceFee = Number((sellingPrice * 0.15).toFixed(2));
-  const fulfillmentFee = Number(
-    (sellingPrice > 100 ? 7.45 : sellingPrice > 45 ? 5.8 : 4.15).toFixed(2)
-  );
+  const fees = estimateAmazonFees({
+    sellingPrice,
+    category: options?.category,
+    fulfillmentType: options?.fulfillmentType,
+  });
+  const marketplaceFee = fees.referralFeeAmount;
+  const fulfillmentFee = fees.fulfillmentFeeAmount;
   const landedCost = Number(
     (sourcePrice + prepCost + marketplaceFee + fulfillmentFee).toFixed(2)
   );
@@ -33,6 +50,8 @@ export function calculateLandedCostAndProfit(
     landedCost,
     estimatedNetProfit,
     roiPercent,
+    feeProvenance: fees.provenance,
+    feeBasis: fees.basis,
   };
 }
 

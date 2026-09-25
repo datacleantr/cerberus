@@ -49,6 +49,7 @@ export async function GET() {
       refundAmount: Number(o.refundAmount),
       cargoStatus: o.cargoStatus,
       sellingPrice: Number(o.sellingPrice),
+      fulfillmentType: o.fulfillmentType,
     }));
 
     const health = computeWeeklyStoreHealth(identities, orderFacts);

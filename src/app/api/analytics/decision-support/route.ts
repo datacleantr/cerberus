@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { orders, products, supplierOffers } from "@/db/schema";
 import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { handleRouteError } from "@/lib/apiResponse";
-import { computeAnalyticsKpis, buildTrend, buildStoreComparison, buildAlerts } from "@/domain/analytics";
+import { computeAnalyticsKpis, buildTrend, buildStoreComparison, buildAlerts, computeProductPnlRanking } from "@/domain/analytics";
 import { computePriceTrend } from "@/domain/productBackfill";
 import { sql, desc, eq, and, gte } from "drizzle-orm";
 
@@ -56,6 +56,7 @@ export async function GET(req: Request) {
       pshBatchNo: o.pshBatchNo,
       cargoStatus: o.cargoStatus,
       sellingPrice: Number(o.sellingPrice),
+      fulfillmentType: o.fulfillmentType,
     })));
 
     // Trend
@@ -66,6 +67,7 @@ export async function GET(req: Request) {
       shippedToAmazon: Number(o.shippedToAmazon),
       refundAmount: Number(o.refundAmount),
       sellingPrice: Number(o.sellingPrice),
+      fulfillmentType: o.fulfillmentType,
     })), period === "7d" ? "daily" : "daily");
 
     // Mağaza kıyas
@@ -114,27 +116,22 @@ export async function GET(req: Request) {
       asin: o.asin, title: o.title, firstPrice: o.firstPrice, latestPrice: o.latestPrice, changePercent: o.changePercent, direction: o.direction, isOpportunity: o.isOpportunity,
     })));
 
-    // En kârlı / en zararlı ürünler (siparişlerden)
-    const pnlByProduct = new Map<number, { asin: string; title: string; units: number; shipped: number; cost: number; revenue: number; refunds: number }>();
-    for (const o of orderRows) {
-      const pid = (o as unknown as { productId: number }).productId;
-      if (!pid) continue;
-      const b = pnlByProduct.get(pid) || { asin: o.asin, title: o.productTitle, units: 0, shipped: 0, cost: 0, revenue: 0, refunds: 0 };
-      b.units += Number(o.quantity) || 0;
-      b.shipped += Number(o.shippedToAmazon) || 0;
-      b.cost += Number(o.totalCost) || 0;
-      b.revenue += (Number(o.shippedToAmazon) || 0) * (Number(o.sellingPrice) || 0);
-      b.refunds += Number(o.refundAmount) || 0;
-      pnlByProduct.set(pid, b);
-    }
-    const pnlRanked = Array.from(pnlByProduct.values()).map((p) => ({
-      ...p,
-      netProfit: Number((p.revenue - Math.max(0, p.cost - p.refunds)).toFixed(2)),
-      roi: Math.max(0, p.cost - p.refunds)
-        ? Number((((p.revenue - Math.max(0, p.cost - p.refunds)) / Math.max(0, p.cost - p.refunds)) * 100).toFixed(1))
-        : null,
-      fulfillmentRate: p.units ? Number(((p.shipped / p.units) * 100).toFixed(1)) : 0,
-    })).sort((a, b) => b.netProfit - a.netProfit);
+    // En kârlı / en zararlı ürünler (siparişlerden) — N-3 uzantısı: Amazon
+    // ücreti artık düşülüyor (bkz. src/domain/analytics.ts computeProductPnlRanking).
+    const pnlRanked = computeProductPnlRanking(
+      orderRows.map((o) => ({
+        productId: (o as unknown as { productId: number | null }).productId,
+        asin: o.asin,
+        title: o.productTitle,
+        quantity: Number(o.quantity),
+        shippedToAmazon: Number(o.shippedToAmazon),
+        totalCost: Number(o.totalCost),
+        sellingPrice: Number(o.sellingPrice),
+        refundAmount: Number(o.refundAmount),
+        fulfillmentType: o.fulfillmentType,
+        category: productById.get((o as unknown as { productId: number | null }).productId ?? -1)?.category,
+      }))
+    );
 
     const topProfitable = pnlRanked.slice(0, 5);
     const topLossmaking = pnlRanked.filter((p) => p.netProfit < 0).slice(-5).reverse();

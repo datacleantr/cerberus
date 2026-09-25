@@ -93,6 +93,7 @@ export async function GET(req: Request) {
             p4ExpiredQty: orders.p4ExpiredQty,
             refundAmount: orders.refundAmount,
             cargoStatus: orders.cargoStatus,
+            fulfillmentType: orders.fulfillmentType,
           })
           .from(orders),
       ]);
@@ -135,6 +136,7 @@ export async function GET(req: Request) {
             p4ExpiredQty: Number(r.p4ExpiredQty) || 0,
             refundAmount: Number(r.refundAmount) || 0,
             cargoStatus: r.cargoStatus || "",
+            fulfillmentType: r.fulfillmentType,
           }))
         )
       );
@@ -295,7 +297,8 @@ export async function POST(req: Request) {
     const landed = calculateLandedCostAndProfit(
       numericSourcePrice,
       numericSellingPrice,
-      Number(prepCost) || 1.35
+      Number(prepCost) || 1.35,
+      { category }
     );
 
     const { getThresholds: getThresholdsPost } = await import("@/lib/settings");

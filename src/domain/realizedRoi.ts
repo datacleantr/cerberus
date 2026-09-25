@@ -17,6 +17,16 @@
  * daha tehlikelidir. Yönetici uydurma bir sayıya güvenip karar verebilir.
  */
 
+/**
+ * EK DÜZELTME (denetim N-3'ün doğal uzantısı, 2026-09-25): bu motor gelirini
+ * `shippedToAmazon * sellingPrice` olarak hesaplıyor, Amazon'un kestiği
+ * referral/fulfillment ücretini HİÇ düşmüyordu — yani "gerçekleşen net kâr"
+ * de facto brüt gelirdi. `estimateAmazonFees` (src/domain/amazonFees.ts) ile
+ * aynı dürüst tahmin artık burada da uygulanır: `estimatedAmazonFees` ayrı
+ * bir satır olarak raporlanır, net kâr ve ROI bunu düşerek hesaplanır.
+ */
+import { estimateAmazonFees } from "./amazonFees";
+
 /** Gerçekleşen ROI hesabına giren tek bir sipariş satırı */
 export interface RealizedOrderFacts {
   /** Satın alınan toplam adet */
@@ -41,6 +51,10 @@ export interface RealizedOrderFacts {
   refundAmount: number;
   /** Kargo durumu — 'İPTAL' ise gelir yazılmaz */
   cargoStatus: string;
+  /** 'FBA'|'FBM'|... — verilmezse FBA varsayılır (bkz. amazonFees.ts) */
+  fulfillmentType?: string | null;
+  /** Ürün kategorisi — verilirse referral ücreti daha isabetli tahmin edilir */
+  category?: string | null;
 }
 
 export interface RealizedRoiResult {
@@ -52,8 +66,10 @@ export interface RealizedRoiResult {
   realizedRevenue: number;
   /** Tedarikçi iadesi düşüldükten sonraki gerçekleşen net maliyet */
   realizedCost: number;
-  /** Gelir - maliyet */
+  /** Gelir - maliyet - tahmini Amazon ücreti */
   realizedNetProfit: number;
+  /** Amazon'un referral + fulfillment ücreti olarak kestiği tahmini toplam (bkz. amazonFees.ts) */
+  estimatedAmazonFees: number;
   /** Fire nedeniyle kaybedilen adet (P1+P2+P3+P4) */
   lostUnits: number;
   /** Toplam iade tutarı */
@@ -83,6 +99,7 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
     realizedRevenue: 0,
     realizedCost: 0,
     realizedNetProfit: 0,
+    estimatedAmazonFees: 0,
     lostUnits: 0,
     totalRefunds: 0,
     sampleSize: 0,
@@ -95,6 +112,7 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
   let realizedUnits = 0;
   let realizedRevenue = 0;
   let realizedCost = 0;
+  let estimatedAmazonFees = 0;
   let lostUnits = 0;
   let totalRefunds = 0;
 
@@ -129,6 +147,17 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
     const billable = Math.min(shipped, qty);
     realizedUnits += billable;
     realizedRevenue += billable * price;
+
+    // Amazon'un kestiği pay yalnız gelir üreten (sevk edilmiş) adet
+    // üzerinden tahmin edilir — depoda bekleyen adet henüz satılmadı.
+    if (billable > 0) {
+      const fee = estimateAmazonFees({
+        sellingPrice: price,
+        category: r.category,
+        fulfillmentType: r.fulfillmentType,
+      });
+      estimatedAmazonFees += billable * fee.totalFeeAmount;
+    }
   }
 
   // Kilitli XLS sözleşmesinde refund, tedarikçinin ödeme kartına yaptığı
@@ -137,12 +166,17 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
   // üretmeyiz (fazla tahsilat ayrıca muhasebe mutabakatı gerektirir).
   realizedCost = Math.max(0, realizedCost - totalRefunds);
 
+  const roundedCost = round2(realizedCost);
+  const roundedFees = round2(estimatedAmazonFees);
+  const totalCostBasis = round2(roundedCost + roundedFees);
+
   const result: RealizedRoiResult = {
     realizedRoiPercent: null,
     realizedUnits,
     realizedRevenue: round2(realizedRevenue),
-    realizedCost: round2(realizedCost),
-    realizedNetProfit: round2(realizedRevenue - realizedCost),
+    realizedCost: roundedCost,
+    realizedNetProfit: round2(realizedRevenue - roundedCost - roundedFees),
+    estimatedAmazonFees: roundedFees,
     lostUnits,
     totalRefunds: round2(totalRefunds),
     sampleSize: rows.length,
@@ -154,13 +188,13 @@ export function computeRealizedRoi(rows: RealizedOrderFacts[]): RealizedRoiResul
     return { ...result, reason: "NOTHING_SHIPPED" };
   }
 
-  if (result.realizedCost <= 0) {
+  // ROI, tedarikçi maliyeti + tahmini Amazon ücretinin TOPLAMINA göre
+  // hesaplanır (landed-cost ROI ile aynı yöntem, bkz. decisionEngine.ts).
+  if (totalCostBasis <= 0) {
     return { ...result, reason: "ZERO_COST" };
   }
 
-  result.realizedRoiPercent = round2(
-    (result.realizedNetProfit / result.realizedCost) * 100
-  );
+  result.realizedRoiPercent = round2((result.realizedNetProfit / totalCostBasis) * 100);
 
   return result;
 }

@@ -36,6 +36,33 @@ describe("calculateLandedCostAndProfit (Landed-Cost Motoru)", () => {
   });
 });
 
+describe("calculateLandedCostAndProfit — N-3 düzeltmesi (kategori + fulfillmentType)", () => {
+  it("kategori/fulfillmentType verilmezse eski davranışla birebir aynıdır (geriye dönük uyumlu)", () => {
+    const r = calculateLandedCostAndProfit(20, 45);
+    expect(r.marketplaceFee).toBe(6.75);
+    expect(r.fulfillmentFee).toBe(4.15);
+    expect(r.feeProvenance).toBe("DEFAULT_ASSUMED");
+  });
+
+  it("bilinen kategori verilirse referral ücreti kategoriye göre değişir", () => {
+    const r = calculateLandedCostAndProfit(20, 45, 1.35, { category: "Jewelry" });
+    expect(r.marketplaceFee).toBe(9); // 45 * 0.20
+    expect(r.feeProvenance).toBe("CATEGORY_MATCHED");
+  });
+
+  it("FBM sipariş için Amazon fulfillment ücreti sıfırdır", () => {
+    const r = calculateLandedCostAndProfit(20, 45, 1.35, { fulfillmentType: "FBM" });
+    expect(r.fulfillmentFee).toBe(0);
+    expect(r.marketplaceFee).toBe(6.75);
+  });
+
+  it("feeBasis her zaman okunabilir bir Türkçe gerekçe döner", () => {
+    const r = calculateLandedCostAndProfit(20, 45);
+    expect(typeof r.feeBasis).toBe("string");
+    expect(r.feeBasis.length).toBeGreaterThan(0);
+  });
+});
+
 describe("computeDecisionEngine (Karar Motoru)", () => {
   it("yüksek ROI + temiz duplicate -> BUY / LOW risk", () => {
     const r = computeDecisionEngine(60, "homedepot.com", 12);
