@@ -33,6 +33,65 @@ export interface KeepaProductStats {
   isPriceStable: boolean;
   fetchedAt: string;
   isMock: boolean;
+  // --- Eşleştirme ve karar için ek alanlar (Keepa product object) ---
+  /** Aylık tahmini satış adedi — talep sinyalinin en doğrudan ölçütü. */
+  monthlySold?: number | null;
+  /** Varyantın üst ürünü (renk/boyut varyantları burada toplanır). */
+  parentAsin?: string | null;
+  parentTitle?: string | null;
+  /** Üretici parça numarası — perakende SKU'suyla eşleştirmede en güçlü sinyal. */
+  partNumber?: string | null;
+  /** Marka mağazası — "doğru marka mı" kontrolü. */
+  brandStoreName?: string | null;
+  itemTypeKeyword?: string | null;
+  /** Kullanıcının tarif ettiği akışta ürünün Amazon listeleme adresi. */
+  amazonUrl?: string | null;
+}
+
+/**
+ * Perakende ürününü Amazon'daki karşılığına bağlamak için gereken kimlik
+ * ipuçları. GTIN birincil, diğerleri sıralı yedek.
+ */
+export interface ProductLookupHints {
+  gtin?: string | null;
+  brand?: string | null;
+  title?: string | null;
+  sourceSku?: string | null;
+}
+
+/** Amazon eşleşmesinin güvenilirlik derecesi. */
+export type MatchConfidence = "exact" | "high" | "medium" | "low";
+
+export interface AmazonProductMatch {
+  asin: string;
+  amazonUrl: string;
+  title: string;
+  brand?: string | null;
+  partNumber?: string | null;
+  confidence: MatchConfidence;
+  /** Kullanıcıya gösterilecek gerekçe: hangi sinyale dayandı. */
+  reason: string;
+}
+
+const AMAZON_DOMAIN_URL: Record<number, string> = {
+  1: "amazon.com",
+  2: "amazon.co.uk",
+  3: "amazon.de",
+  4: "amazon.fr",
+  5: "amazon.co.jp",
+  6: "amazon.ca",
+  8: "amazon.com.mx",
+  9: "amazon.com.br",
+  10: "amazon.nl",
+  11: "amazon.se",
+  12: "amazon.pl",
+  13: "amazon.com.au",
+  14: "amazon.com.tr",
+};
+
+export function amazonUrlFor(asin: string, domain = 1): string {
+  const host = AMAZON_DOMAIN_URL[domain] ?? "amazon.com";
+  return `https://www.${host}/dp/${asin}`;
 }
 
 function hashAsin(asin: string): number {
@@ -94,6 +153,13 @@ export function mockKeepaData(asin: string, domain = 1): KeepaProductStats {
     isPriceStable: priceVolatility !== null ? priceVolatility < 0.08 : false,
     fetchedAt: now.toISOString(),
     isMock: true,
+    monthlySold: 500 + (h % 20000),
+    parentAsin: null,
+    parentTitle: null,
+    partNumber: null,
+    brandStoreName: null,
+    itemTypeKeyword: null,
+    amazonUrl: amazonUrlFor(asin.toUpperCase(), domain),
   };
 }
 
@@ -175,6 +241,14 @@ function parseKeepaResponse(raw: unknown, asin: string, domain: number): KeepaPr
     isPriceStable: priceVolatility !== null ? priceVolatility < 0.08 : false,
     fetchedAt: new Date().toISOString(),
     isMock: false,
+    // Eşleştirme ve karar için ek alanlar
+    monthlySold: typeof p.monthlySold === "number" ? p.monthlySold : null,
+    parentAsin: (p.parentAsin as string) || null,
+    parentTitle: (p.parentTitle as string) || null,
+    partNumber: (p.partNumber as string) || null,
+    brandStoreName: (p.brandStoreName as string) || null,
+    itemTypeKeyword: (p.itemTypeKeyword as string) || null,
+    amazonUrl: amazonUrlFor(asin.toUpperCase(), domain),
   };
 }
 
@@ -229,17 +303,19 @@ export async function fetchKeepaProduct(
 /** Keepa metriklerinden türetilmiş, UI'da gösterilecek özet */
 export function summarizeKeepa(k: KeepaProductStats) {
   const demandLabel =
-    k.salesRank === null
-      ? "Bilinmiyor"
-      : k.salesRank < 10000
-        ? "Çok Yüksek Talep"
-        : k.salesRank < 50000
-          ? "Yüksek Talep"
-          : k.salesRank < 150000
-            ? "Orta Talep"
-            : k.salesRank < 300000
-              ? "Düşük Talep"
-              : "Çok Düşük Talep";
+    k.monthlySold !== undefined && k.monthlySold !== null && k.monthlySold > 0
+      ? `~${k.monthlySold.toLocaleString("tr-TR")} adet/ay`
+      : k.salesRank === null
+        ? "Bilinmiyor"
+        : k.salesRank < 10000
+          ? "Çok Yüksek Talep"
+          : k.salesRank < 50000
+            ? "Yüksek Talep"
+            : k.salesRank < 150000
+              ? "Orta Talep"
+              : k.salesRank < 300000
+                ? "Düşük Talep"
+                : "Çok Düşük Talep";
 
   const competitionLabel =
     k.offerCount === null
@@ -255,4 +331,205 @@ export function summarizeKeepa(k: KeepaProductStats) {
   const stabilityLabel = k.isPriceStable ? "Fiyat İstikrarlı" : k.priceVolatility !== null && k.priceVolatility > 0.25 ? "Fiyat Çok Dalgalı" : "Fiyat Dalgalı";
 
   return { demandLabel, competitionLabel, stabilityLabel };
+}
+
+// ---------------------------------------------------------------------------
+// Perakende → Amazon ürün çözümlemesi
+//
+// Kullanıcının akışı: perakende sitesinde ürünü bul → SKU/GTIN al → Amazon'daki
+// karşılığını bul → ASIN + linki kaydet. Keepa bu haliyle YALNIZ ASIN kabul
+// ediyordu; ara halka eksikti.
+//
+// Çözümleme sırası (güvenilirlik azalan):
+//   1. GTIN/EAN  → Keepa `code=` parametresi. Birebir aynı fiziksel ürün.
+//   2. MPN/SKU   → Keepa `partNumber` ile tam eşleşme.
+//   3. Anahtar   → Keepa arama + marka/başlık benzerliği puanlaması.
+// ---------------------------------------------------------------------------
+
+/** Marka metnini karşılaştırılabilir hâle getirir. */
+function normalizeBrand(value?: string | null): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/\b(nutrition|health|foods?|brands?|inc|llc|ltd|corp|corporation|co|usa|us|the)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+/** Başlık benzerliği — Jaccard, token kesişimi üzerinden. */
+function titleSimilarity(a: string, b: string): number {
+  const tokenize = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length > 2)
+    );
+  const ta = tokenize(a);
+  const tb = tokenize(b);
+  if (!ta.size || !tb.size) return 0;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  return shared / (ta.size + tb.size - shared);
+}
+
+/** Keepa `products[]` girdisinden ASIN + gerekçe çıkarır. */
+function toMatch(
+  raw: Record<string, unknown>,
+  domain: number,
+  confidence: MatchConfidence,
+  reason: string
+): AmazonProductMatch {
+  const asin = String(raw.asin ?? "").toUpperCase();
+  return {
+    asin,
+    amazonUrl: amazonUrlFor(asin, domain),
+    title: String(raw.title ?? ""),
+    brand: (raw.brand as string) ?? null,
+    partNumber: (raw.partNumber as string) ?? null,
+    confidence,
+    reason,
+  };
+}
+
+async function keepaFetch<T>(path: string, params: Record<string, string>): Promise<T> {
+  const key = await resolveKeepaKey();
+  if (!key) throw new Error("KEEPA_API_KEY tanımlı değil.");
+  const qs = new URLSearchParams({ key, ...params });
+  const res = await fetch(`https://api.keepa.com/${path}?${qs}`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (res.status === 429) {
+    const err = new Error(
+      `Keepa kotası doldu. ${res.headers.get("retry-after") || "60"} sn sonra tekrar deneyin.`
+    ) as Error & { status?: number };
+    err.status = 429;
+    throw err;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Keepa API hatası ${res.status}: ${body.slice(0, 200)}`);
+  }
+  return (await res.json()) as T;
+}
+
+/**
+ * GTIN/EAN/UPC/ISBN → Amazon ürünü. Keepa'nın `code=` parametresi.
+ * Doğrudur: aynı GTIN = aynı fiziksel ürün. Bulunamazsa `null`.
+ */
+export async function findAmazonProductByGtin(
+  gtin: string,
+  domain = 1
+): Promise<AmazonProductMatch | null> {
+  const digits = gtin.replace(/\D/g, "");
+  if (![8, 12, 13, 14].includes(digits.length)) return null;
+  const data = await keepaFetch<{ products?: Record<string, unknown>[] }>("product", {
+    domain: String(domain),
+    code: digits,
+    stats: "0",
+  });
+  const products = data.products ?? [];
+  if (!products.length) return null;
+  const first = products[0];
+  // Keepa bazen eşleşme bulamayınca alakasız ürün döndürür. ASIN biçimini
+  // doğrulayarak sessizce yanlış ürünü kabul etmemeyi tercih ediyoruz.
+  if (!/^[A-Z0-9]{10}$/i.test(String(first.asin ?? ""))) return null;
+  return toMatch(first, domain, "exact", `GTIN ${digits} birebir eşleşti`);
+}
+
+/** Keepa metin araması — marka + başlık. */
+export async function searchAmazonProducts(
+  term: string,
+  domain = 1
+): Promise<Record<string, unknown>[]> {
+  const data = await keepaFetch<{ products?: Record<string, unknown>[] }>("search", {
+    domain: String(domain),
+    term,
+    type: "product",
+    page: "1",
+  });
+  return data.products ?? [];
+}
+
+/**
+ * Perakende ürününü Amazon'daki karşılığına bağlar.
+ *
+ * Sıra: GTIN → MPN/SKU → marka+başlık araması. Her adımda gerekçe ve
+ * güvenilirlik döner; çağıran taraf bunu kullanıcıya göstermelidir.
+ * Çünkü yanlış ürüne eşleşmek, doğru ürüne eşleşmemekten KÖTÜDÜR:
+ * birincisi sessizce yanlış mal satma riski, ikincisi sadece eksik sonuçtur.
+ */
+export async function resolveAmazonProduct(
+  hints: ProductLookupHints,
+  domain = 1
+): Promise<AmazonProductMatch | null> {
+  // 1) GTIN — en güvenilir
+  if (hints.gtin) {
+    try {
+      const byGtin = await findAmazonProductByGtin(hints.gtin, domain);
+      if (byGtin) return byGtin;
+    } catch {
+      // Kota/hata durumunda sessizce sonraki yönteme düş.
+    }
+  }
+
+  const brand = normalizeBrand(hints.brand);
+
+  // 2) MPN/SKU — Keepa partNumber alanı üretici parça numarasıdır; perakende
+  //    SKU'suyla birebir tutar. Aramayı daraltmak için önce markayla birlikte
+  //    sorgula, sonuçlarda partNumber'ı karşılaştır.
+  const sku = (hints.sourceSku ?? "").trim();
+  if (sku && brand) {
+    try {
+      const candidates = await searchAmazonProducts(`${hints.brand} ${sku}`.trim(), domain);
+      const normalizedSku = sku.replace(/[^a-z0-9]/gi, "").toLowerCase();
+      for (const raw of candidates) {
+        const partNumber = String(raw.partNumber ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+        if (!partNumber) continue;
+        if (partNumber === normalizedSku && normalizeBrand(raw.brand as string) === brand) {
+          return toMatch(raw, domain, "high", `MPN/SKU eşleşti (${raw.partNumber}) ve marka tutuyor`);
+        }
+      }
+    } catch {
+      // Sonraki yönteme düş.
+    }
+  }
+
+  // 3) Marka + başlık araması, benzerlik puanlaması
+  const title = (hints.title ?? "").trim();
+  if (!title) return null;
+  try {
+    const candidates = await searchAmazonProducts(
+      `${hints.brand ?? ""} ${title}`.trim().slice(0, 200),
+      domain
+    );
+    let best: AmazonProductMatch | null = null;
+    let bestScore = 0;
+    for (const raw of candidates) {
+      const candidateTitle = String(raw.title ?? "");
+      if (!candidateTitle) continue;
+      const score = titleSimilarity(title, candidateTitle);
+      // Marka eşleşmiyorsa başlık ne kadar benzer olursa olsun güvenilmez:
+      // aynı isimli farklı marka ürünleri yaygındır.
+      const brandBonus = brand && normalizeBrand(raw.brand as string) === brand ? 0.25 : 0;
+      const total = score + brandBonus;
+      if (total > bestScore) {
+        bestScore = total;
+        const confidence: MatchConfidence = total >= 0.7 ? "medium" : total >= 0.45 ? "low" : "low";
+        best = toMatch(
+          raw,
+          domain,
+          confidence,
+          `Başlık benzerliği %${Math.round(score * 100)}` +
+            (brandBonus ? " + marka eşleşti" : " (marka farklı — doğrulayın)")
+        );
+      }
+    }
+    // Düşük eşik altında eşleştirme YAPMA: yanlış ürün, ürün bulamamaktan
+    // daha kötüdür. Kullanıcıya adayları gösterip seçtirelim.
+    return bestScore >= 0.45 ? best : null;
+  } catch {
+    return null;
+  }
 }

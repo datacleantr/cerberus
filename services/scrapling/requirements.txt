@@ -1,7 +1,18 @@
+# Scrapling'in `fetchers` extra'sı ŞART: StealthyFetcher bu extra'nın
+# bağımlılıkları olmadan import bile edilemiyor.
+#
+# ESKİ HATA: burada paketler tek tek sabitleniyordu (playwright, curl_cffi,
+# browserforge). Scrapling 0.4.15 ayrıca şunları da gerektiriyor:
+#   patchright, apify-fingerprint-datapoints, msgspec, protego, anyio,
+#   click, lxml, cssselect, orjson, tld, w3lib, typing_extensions
+# Sonuç: `ModuleNotFoundError: No module named 'patchright'` — servis 502
+# dönüyordu ve hata mesajı bunun bir kurulum sorunu olduğunu söylemiyordu.
+#
+# `scrapling[fetchers]` tüm doğru sürüm kümesini kendisi getirir; elle
+# sabitlemek sürüm ikiliğine yol açar.
+scrapling[fetchers]==0.4.15
+
+# Servis katmanı
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
-scrapling==0.4.15
-curl_cffi==0.16.3
-playwright==1.62.0
-browserforge==1.2.4
 pydantic==2.8.0

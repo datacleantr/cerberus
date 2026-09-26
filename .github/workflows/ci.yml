@@ -37,3 +37,25 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/ci_placeholder
           SESSION_SECRET: ci-only-build-secret-min-32-characters!!
+
+  # Scrapling servisinin saf katmanı (GTIN kontrolü, sahte ASIN tespiti, bot
+  # koruması tanıma). Bu testler daha önce hiç çalışmıyordu; `parsing.py`
+  # framework bağımlılığından ayrıldığı için pip kurulumu gerekmiyor.
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: services/scrapling
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sözdizimi denetimi
+        run: python -m py_compile main.py security.py parsing.py
+
+      - name: Birim testleri (GTIN / sahte ASIN / bot koruması)
+        run: python -m unittest test_main -v

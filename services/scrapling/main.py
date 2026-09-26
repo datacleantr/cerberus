@@ -1,18 +1,22 @@
 """
 Scrapling mikro-servisi — JS crawler 403/bot challenge'da buraya düşer.
 
-Deploy: Dockerfile ile Render / Fly / Railway / Vercel Python Function.
+BU DOSYA YALNIZ TRANSPORT KATMANIDIR: FastAPI, token doğrulama, boyut sınırı
+ve Scrapling/Playwright çağrısı. GTIN kontrolü, sahte ASIN tespiti, bot
+koruması tanıma ve ürün ayrıştırma `parsing.py` içindedir — framework
+bağımlılığı olmadan test edilir. Python'daki davranışların
+`src/lib/crawler/scraper.ts` ile birebir aynı olması gerekir.
+
+Deploy: Dockerfile ile Fly.io / Render / Railway (ABD bölgesi ZORUNLU).
 Local: pip install -r requirements.txt && python main.py
 
 POST /scrape  { "url": "https://..." }
-→  { sourceUrl, sourceDomain, products: [{title, brand, price, ...}], warnings, fetchedAt, isListingPage, engine }
-
-Scrapling dokümantasyonu: https://github.com/D4Vinci/Scrapling
-StealthyFetcher + adaptif parser — JS katmanıyla birebir aynı ürün şemasını döner.
+→  { sourceUrl, sourceDomain, products, warnings, fetchedAt, isListingPage, engine, blockedBy }
 """
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, HttpUrl
-import re, json, urllib.parse
+import os
+import urllib.parse
 from datetime import datetime, timezone
 from security import (
     OutboundSecurityError,
@@ -20,19 +24,52 @@ from security import (
     validate_outbound_url as enforce_outbound_url,
 )
 
-app = FastAPI(title="Cerberus Scrapling Service", version="1.1.0")
+app = FastAPI(title="Cerberus Scrapling Service", version="1.2.0")
 MAX_HTML_BYTES = 3 * 1024 * 1024
 
 class ScrapeReq(BaseModel):
     url: HttpUrl
-    # opsiyonel: proxy, headless vs. genişletilebilir
-    headless: bool = False
+    # Sunucuda ekran (XServer) yoktur; headed mod "Looks like you launched a
+    # headed browser without having a XServer running" hatasıyla çöker.
+    # Bu yüzden varsayılan HEADLESS'tR. Scrapling'in headed modda daha iyi
+    # sonuç verdiği iddiası yalnız `xvfb-run` altında geçerlidir; bu imajda
+    # xvfb kurulu değil, dolayısıyla headless tek doğru seçimdir.
+    # İstek gövdesiyle override edilebilir ama pratikte gerekmez.
+    headless: bool = True
+
+def _proxy_url() -> str | None:
+    """ABD kaynaklı proxy URL'si.
+
+    NEDEN ZORUNLU: DataDome yalnız TLS parmak izine değil, IP'nin
+    DATACENTER olmasına da bakar. Fly/Render/Hetzner gibi bulut IP'leri
+    yayınlanmış listelerdedir; gerçek Chromium kullansanız bile yüksek
+    engelleme olasılığı vardır. ABD RESIDENTIAL proxy bu eşiği belirgin
+    biçimde düşürür.
+
+    Proxy env'den okunur, istek gövdesinden DEĞİL: aksi halde kullanıcı
+    başka bir proxy'yi (veya proxy'siz çalışmayı) enjekte edebilirdi.
+    """
+    raw = (os.environ.get("SCRAPER_PROXY_URL") or "").strip()
+    if not raw:
+        return None
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in ("http", "https", "socks5", "socks5h"):
+        return None
+    if not parsed.hostname:
+        return None
+    return raw
 
 def extract_domain(url: str) -> str:
     try:
         return urllib.parse.urlparse(url).hostname or "unknown"
     except:
         return "unknown"
+
+
+def _headless_override() -> bool:
+    """SCRAPING_HEADLESS=false ile headed moda geçilebilir (yalnız xvfb altında)."""
+    raw = (os.environ.get("SCRAPING_HEADLESS") or "true").strip().lower()
+    return raw not in ("false", "0", "no")
 
 
 def validate_outbound_url(url: str, enforce_allowlist: bool = True) -> None:
@@ -50,96 +87,20 @@ def require_service_token(provided: str | None) -> None:
         raise HTTPException(status_code=error.status_code, detail=error.detail) from error
 
 
-def extract_asin_candidate(url: str, html: str):
-    m = re.search(r"/p/([^/?#]+)", url, re.I)
-    if m: return m.group(1)[:32].upper()
-    m = re.search(r"\b(B0[A-Z0-9]{8})\b", url, re.I)
-    if m: return m.group(1).upper()
-    m = re.search(r"\b(VS-\d+|VS\d+)\b", html, re.I)
-    if m: return m.group(1).upper()
-    return None
 
-def decode_html(s: str) -> str:
-    return s.replace("&amp;","&").replace("&quot;",'"').replace("&#39;","'").replace("&lt;","<").replace("&gt;",">").replace("&nbsp;"," ")
+from parsing import (  # saf katman: framework'den bagimsiz, test edilebilir
+    decode_html,
+    detect_bot_challenge,
+    extract_asin_candidate,
+    extract_jsonld,
+    is_plausible_product,
+    is_valid_gtin,
+    offer_list,
+    parse_generic,
+    pick_gtin,
+    to_price,
+)
 
-def extract_jsonld(html: str):
-    results = []
-    for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>', html, re.I):
-        raw = m.group(1).strip()
-        try:
-            parsed = json.loads(raw)
-            arr = parsed if isinstance(parsed, list) else [parsed]
-            for o in arr:
-                if o.get("@type") in ("Product","ItemList") or isinstance(o.get("@graph"), list):
-                    results.append(o)
-                if isinstance(o.get("@graph"), list):
-                    for g in o["@graph"]:
-                        if isinstance(g, dict) and g.get("@type") == "Product":
-                            results.append(g)
-        except:
-            pass
-    return results
-
-def parse_generic(html: str, base_url: str, domain: str):
-    items = []
-    ld = extract_jsonld(html)
-    for p in ld:
-        if p.get("@type") == "Product":
-            name = str(p.get("name") or p.get("title") or "").strip()
-            if not name: continue
-            brand = p.get("brand")
-            if isinstance(brand, dict): brand = brand.get("name")
-            brand = str(brand or domain.split(".")[0].upper())
-            offers = p.get("offers") or {}
-            price = None
-            currency = "USD"
-            avail = "UNKNOWN"
-            if isinstance(offers, dict):
-                if offers.get("price") is not None:
-                    try: price = float(str(offers["price"]).replace(",",""))
-                    except: pass
-                currency = offers.get("priceCurrency") or "USD"
-                av = str(offers.get("availability") or "").lower()
-                if "instock" in av: avail = "IN_STOCK"
-                elif "outofstock" in av: avail = "OUT_OF_STOCK"
-            img = p.get("image")
-            if isinstance(img, list): img = img[0] if img else None
-            prod_url = str(p.get("url") or base_url)
-            items.append({
-                "sourceUrl": prod_url,
-                "sourceDomain": domain,
-                "title": decode_html(name)[:300],
-                "brand": decode_html(str(brand))[:80],
-                "price": price if isinstance(price,(int,float)) and price==price else None,
-                "currency": currency,
-                "imageUrl": str(img) if img else None,
-                "availability": avail,
-                "asinCandidate": extract_asin_candidate(prod_url, html),
-            })
-    if items: return items
-    # OG fallback
-    m = re.search(r'<meta[^>]+(?:property|name)=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
-    if not m:
-        m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*og:title', html, re.I)
-    og = decode_html(m.group(1)) if m else (re.search(r"<title[^>]*>([^<]+)</title>", html, re.I).group(1).strip() if re.search(r"<title[^>]*>([^<]+)</title>", html, re.I) else "")
-    if og and len(og) > 5:
-        price = None
-        pm = re.search(r'["\']price["\']\s*:\s*["\']?\$?([\d.,]+)', html, re.I)
-        if pm:
-            try: price = float(pm.group(1).replace(",",""))
-            except: pass
-        items.append({
-            "sourceUrl": base_url,
-            "sourceDomain": domain,
-            "title": decode_html(og)[:300],
-            "brand": domain.split(".")[0].upper(),
-            "price": price,
-            "currency": "USD",
-            "imageUrl": None,
-            "availability": "UNKNOWN",
-            "asinCandidate": extract_asin_candidate(base_url, html),
-        })
-    return items
 
 @app.get("/health")
 def health():
@@ -187,15 +148,36 @@ def scrape(req: ScrapeReq, x_scrapling_token: str | None = Header(default=None))
             browser_page.on("response", inspect_response)
 
         # v0.4.15 API'si `fetch` kullanır. page_setup navigasyondan önce çalışır.
-        page = StealthyFetcher.fetch(
-            url,
-            headless=req.headless,
-            network_idle=True,
-            adaptive=True,
-            disable_resources=True,
-            timeout=30_000,
-            page_setup=secure_page_setup,
-        )  # type: ignore
+        fetch_kwargs = {
+            # İstek gövdesindeki değer env ile ezilebilir; sunucu ortamında
+            # headed mod çalışmaz, bu yüzden env açıkça "false" demedikçe
+            # headless zorlanır.
+            "headless": _headless_override() if req.headless else False,
+            "network_idle": True,
+            "adaptive": True,
+            "disable_resources": True,
+            "timeout": 30_000,
+            "page_setup": secure_page_setup,
+        }
+        # Scrapling 0.4.x'te proxy parametre adı sürüme göre değişebiliyor
+        # (`proxy` / `proxy_url`). Bu yüzden tek seferde denemek yerine
+        # imzaya göre seçiyoruz: yanlış parametre TypeError yerine sessizce
+        # proxy'siz gidip korumaya çarpmasın.
+        proxy = _proxy_url()
+        if proxy:
+            import inspect as _inspect
+            accepted = set(_inspect.signature(StealthyFetcher.fetch).parameters)
+            for candidate in ("proxy", "proxy_url", "proxies"):
+                if candidate in accepted:
+                    fetch_kwargs[candidate] = proxy
+                    break
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="SCRAPER_PROXY_URL tanımlı ama bu Scrapling sürümü proxy parametresini desteklemiyor.",
+                )
+
+        page = StealthyFetcher.fetch(url, **fetch_kwargs)  # type: ignore
 
         final_url = str(getattr(page, "url", "") or url)
         validate_outbound_url(final_url)
@@ -212,18 +194,60 @@ def scrape(req: ScrapeReq, x_scrapling_token: str | None = Header(default=None))
         html = str(html)
         if len(html.encode("utf-8")) > MAX_HTML_BYTES:
             raise HTTPException(status_code=413, detail="HTML yanıtı 3 MB sınırını aşıyor.")
+
+        # Gerçek Chromium çalıştı ve yine de engellendiysek bu, korumanın
+        # IP/egress tarafında olduğu demektir (DataDome datacenter IP'lerini
+        # coğrafya ile eler). Sessizce "ürün bulunamadı" demek yerce adıyla söyle.
+        protection, label = detect_bot_challenge(html)
+        if protection:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Gerçek tarayıcıyla da engellendi ({label}). Bu koruma IP/egress "
+                    "tarafında: ABD kaynaklı (datacenter veya residential) proxy gerekiyor."
+                ),
+            )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Scrapling hatası: {e}")
 
     products = parse_generic(html, url, domain)
+
+    # Güvenilirlik süzgeci — SPA iskeleti / splash screen / hata sayfasından
+    # gelen sahte kayıtları ele.
+    before_filter = len(products)
+    products = [p for p in products if is_plausible_product(p)]
+    discarded = before_filter - len(products)
+
     if not products:
-        raise HTTPException(status_code=422, detail="Bu sayfadan ürün bilgisi çıkarılamadı.")
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Sayfa yüklendi ama ürün verisi doğrulanamadı. Site muhtemelen "
+                "JavaScript ile veri çekiyor veya hâlâ koruma katmanının arkasında."
+            ),
+        )
 
     warnings = []
-    if any(p["price"] is None for p in products):
-        warnings.append(f"{sum(1 for p in products if p['price'] is None)} üründe fiyat bulunamadı.")
+    if discarded:
+        warnings.append(f"{discarded} kayıt ürün olarak doğrulanamadı ve elendi (sayfa iskeleti veya splash screen).")
+    missing_price = sum(1 for p in products if p["price"] is None)
+    if missing_price:
+        warnings.append(f"{missing_price} üründe fiyat bulunamadı.")
+
+    with_gtin = sum(1 for p in products if p.get("gtin"))
+    if with_gtin == 0:
+        warnings.append(
+            "GTIN/UPC bulunamadı. Amazon'daki karşılığı bulmak için ürün SAYFASINI "
+            "(kategori listesi değil) tarayın."
+        )
+    elif with_gtin < len(products):
+        warnings.append(f"{len(products) - with_gtin} üründe GTIN yok; Amazon eşleştirmesinde atlanacak.")
+
+    discounted = sum(1 for p in products if p.get("isDiscounted"))
+    if discounted:
+        warnings.append(f"{discounted} ürün liste fiyatının altında — indirim fırsatı.")
 
     return {
         "sourceUrl": url,
@@ -233,6 +257,7 @@ def scrape(req: ScrapeReq, x_scrapling_token: str | None = Header(default=None))
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
         "isListingPage": len(products) > 3,
         "engine": "scrapling-service",
+        "blockedBy": None,
     }
 
 if __name__ == "__main__":

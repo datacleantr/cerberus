@@ -1,0 +1,59 @@
+# Fly.io ile Scrapling servisini ABD'de çalıştır.
+#
+# NEDEN FLY, NEDEN VERCEL DEĞİL:
+#   Playwright + Chromium ~450 MB'tır. Vercel Python fonksiyonlarında 250 MB
+#   (Hobby) sıkıştırılmamış boyut sınırı, salt-okunur dosya sistemi ve
+#   10 sn fonksiyon limiti vardır. Servis production'da çalışmaz.
+#   Fly.io'da gerçek bir container, kalıcı disk ve 300+ sn timeout vardır.
+#
+# NEDEN ABD BÖLGESİ:
+#   DataDome coğrafya bazlı eleme yapar. TR datacenter IP'si ABD perakende
+#   sitelerinde yüksek engelleme olasılığına sahiptir. `primary_region` değerini
+#   değiştirmeyin.
+
+app = "cerberus-scrapling"
+primary_region = "ewr"  # Newark, NJ — ABD kıyısı, TR'ye en yakın bölge
+
+[build]
+  dockerfile = "services/scrapling/Dockerfile"
+
+[env]
+  # Token zorunludur; `fly secrets set` ile verilir (aşağıya bakın).
+  # Token en az 32 karakter olmalı ve İki tarafta AYNI olmalı.
+  PORT = "8000"
+  # Boş bırakılırsa tüm public host'lar crawl edilebilir. Üretimde daraltın:
+  # CRAWLER_ALLOWED_HOSTS = "vitaminshoppe.com,iherb.com"
+  CRAWLER_ALLOWED_HOSTS = "vitaminshoppe.com"
+  # ABD RESIDENTIAL proxy. DataDome datacenter IP'lerini (Fly dahil) eler;
+  # gerçek Chromium yetmez, residential proxy gerekir. Gizli: `fly secrets set`.
+  # SCRAPER_PROXY_URL = "http://user:pass@gate.provider.com:7000"
+
+[[services]]
+  internal_port = 8000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  # Chromium ağır: her scrape ~30 sn sürebilir. Fly'ın varsayılan 30 sn
+  # bağlantı zaman aşımı bu yüzden yetmez.
+  [services.http_options.response]
+    timeout = "60s"
+
+  # Servis public internete açıktır; sadece shared token ile korunur.
+  # Token yanlışlıkla sızarsa trafik başına $1-2 faturalanabilir. İlk iş adımı
+  # token'ı set etmek olmalı.
+  [[services.http_options.concurrency]]
+    type = "requests"
+    soft_limit = 10
+    hard_limit = 20
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

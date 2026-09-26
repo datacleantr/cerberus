@@ -576,15 +576,50 @@ export const scrapedProducts = pgTable("scraped_products", {
   currency: text("currency").notNull().default("USD"),
   imageUrl: text("image_url"),
   availability: text("availability").notNull().default("UNKNOWN"),
+  /**
+   * Gerçek Amazon ASIN. Perakende sitesinden tahmin edilmez; yalnız Amazon
+   * kaynaklı URL'den kabul edilir. NULL, eşleştirme yapılmadı demektir.
+   */
   asinCandidate: text("asin_candidate"),
+  /**
+   * Perakendecinin ürün kodu (VitaminShoppe "VS-12345" vb.). Başlık metnine
+   * göre daha güvenilir ama Amazon SKU'suyla birebir tutmayabilir.
+   */
+  sourceSku: text("source_sku"),
+  /**
+   * GTIN-8/12/13/14 (UPC/EAN) — kontrol hanesi ile doğrulanmış.
+   *
+   * BU, SKU→ASIN EŞLEŞTİRMENİN ANAHTARIDIR. Amazon katalogunda aynı fiziksel
+   * ürün `gtin` alanıyla birebir tutulur; başlık/marka metin eşleştirmesi
+   * ise kupon veya indirim sonrası değişen isimlerde bozulur.
+   */
+  gtin: text("gtin"),
+  /** Üretici parça numarası — ikincil eşleştirme sinyali. */
+  mpn: text("mpn"),
+  /**
+   * Kesintisiz fiyat listesinde fiyatın düştüğü andan itibaren alınan ilk
+   * gözlem. "İndirimi erken görmek" iş akışının veri tabanı: liste fiyatı
+   * bilinmiyorsa NULL, indirim teyit edilemez.
+   */
+  baselinePrice: numeric("baseline_price", { precision: 10, scale: 2 }),
+  /** baselinePrice dolduğu andaki ilk gözlem tarihi. */
+  baselineAt: timestamp("baseline_at"),
+  /** Fiyatın baseline'ın altına indiği andan itibaren alınan ilk tarih. */
+  firstBelowBaselineAt: timestamp("first_below_baseline_at"),
+  /** baselinePrice'ın üzerine çıkıldığında sıfırlanır. */
+  lastPriceChangeAt: timestamp("last_price_change_at"),
   status: text("status").notNull().default("PENDING"),
   discoveredAt: timestamp("discovered_at").defaultNow().notNull(),
 }, (t) => [
   index("scraped_products_job_idx").on(t.jobId),
   index("scraped_products_domain_idx").on(t.sourceDomain),
   index("scraped_products_status_idx").on(t.status),
+  // GTIN ile tekrar taramalarda aynı ürünü bulmak için: her taramada yeni
+  // satır açmak yerine mevcut kaydı güncellemek gerekir.
+  uniqueIndex("scraped_products_gtin_domain_uniq").on(t.gtin, t.sourceDomain),
   check("scraped_products_availability_enum", sql`${t.availability} in ('IN_STOCK','OUT_OF_STOCK','UNKNOWN')`),
   check("scraped_products_status_enum", sql`${t.status} in ('PENDING','IMPORTED','REJECTED')`),
+  check("scraped_products_gtin_digits", sql`${t.gtin} is null or ${t.gtin} ~ '^[0-9]{8}$|^[0-9]{12}$|^[0-9]{13}$|^[0-9]{14}$'`),
 ]);
 
 /**

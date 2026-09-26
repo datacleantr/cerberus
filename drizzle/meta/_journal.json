@@ -78,6 +78,13 @@
       "when": 1790286484820,
       "tag": "0010_hot_lord_hawal",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790443590892,
+      "tag": "0011_massive_wonder_man",
+      "breakpoints": true
     }
   ]
 }

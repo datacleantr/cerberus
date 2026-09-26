@@ -1,68 +1,144 @@
-# Crawler — Scrapling-ilhamlı Mimari
+# Crawler — Mimari ve Gerçeklik Sözleşmesi
 
-> vitaminshoppe.com ve benzeri kaynak sitelerden otomatik ürün keşfi.
-> Geçmişte tek ürün/çağırıda JS render yoktu ve 403 engellerinde başarısız oluyordu.
-> V2, JS katmanını Scrapling fikirleriyle güçlendirir ve opsiyonel Python servisiyle tırmanır.
+> vitaminshoppe.com ve benzeri perakende kaynaklarından ürün keşfi, fiyat ve
+> indirim takibi. **Kullanım amacı:** daha önce Amazon'da satılmış ürünlerin
+> alış fiyatını izlemek, indirimi erken görüp kupon/peşin indirimle almak.
 
-## Neden Scrapling?
+## Akış
 
-[Scrapling](https://github.com/D4Vinci/Scrapling) (79k★):
-- **Adaptif parser** — yapı değişirse parser kendiliğinden en sağlam selector stratejisine geçer.
-- **StealthyFetcher** — header rotasyonu, `Sec-Ch-Ua`/`Sec-Fetch-*`, `browserforge` UA havuzu, Cloudflare Turnstile bypass.
-- **Spider** — eşzamanlı tarama, proxy rotasyonu, pause/resume, otomatik throttling.
-
-Sandbox ağında `curl_cffi` doğrudan `BoringSSL SSL_connect (35)` ile düştüğü için Vercel Node doğrudan Scrapling çalıştıramaz.
-Çözüm: **hibrit** — JS crawler varsayılan, Python servis fallback.
-
-```
+```text
 User URL → /api/crawler/scrape → scrapeUrl()
-  ├─ stealth JS fetch (UA rotasyonu + retry + bot-challenge tespiti)
-  │    └─ JSON-LD → OG → ham link toplama (adaptif — Scrapling gibi)
-  ├─ 403/429 veya Cloudflare tespit → SCRAPLING_SERVICE_URL varsa oraya POST
-  └─ yoksa açıklayıcı hata: "SCRAPLING_SERVICE_URL yapılandırın"
-       → UI: ürün kartları + uyarılar + engine etiketi
+  ├─ ısınma turu (site kökü) → cookie jar (datadome çerezi)
+  ├─ asıl istek (cookie + tutarlı client hint'ler)
+  │    ├─ 200 → JSON-LD → OG → ham link toplama
+  │    ├─ 403/429/503 → koruma gövdesini oku → blockedBy tespit et
+  │    │    └─ SCRAPLING_SERVICE_URL varsa → gerçek Chromium'a düş
+  │    │    └─ yoksa → korumanın adını söyleyen dürüst hata
+  └─ GTIN/SKU çıkar → fiyat geçmişini güncelle → uyarılar
 ```
 
-## JS stealth neler yapar?
+## İki motor, iki farklı yetenek
 
-`src/lib/crawler/scraper.ts`
+| | JS stealth (`scraper.ts`) | Scrapling (`parsing.py` + `main.py`) |
+|---|---|---|
+| Yöntem | `fetch` + başlık taklidi | Playwright/Chromium + TLS parmak izi |
+| GTIN çıkarır | ✅ | ✅ |
+| Basit bot filtrelerini geçer | ✅ | ✅ |
+| **DataDome / Cloudflare / Akamai** | ❌ | ✅ (ABD egress şart) |
+| Gereken altyapı | yok (Next.js içinde) | ayrı container |
 
-- 4'lü Chrome/Firefox UA havuzu (`pickUA`) — URL seed'li deterministik rotasyon
-- `Accept-Language: en-US,en;q=0.9,tr;q=0.6` + `Sec-Ch-Ua` / `Sec-Fetch-*` / `Referer`
-- 15 sn timeout, 3 MB içerik sınırı
-- `looksLikeBotChallenge()` → `cf-challenge`, `turnstile`, `attention required` tespiti
-- 403/429'da 0.8–1.5 sn jitter ile 1 kez retry (farklı UA)
-- `tryScraplingService()` → `POST ${SCRAPLING_SERVICE_URL}/scrape`
+`engine` alanı hangisinin çalıştığını söyler; `blockedBy` hangi korumanın
+engellediğini.
 
-## Python mikro-servisi (opsiyonel)
+## Koruma tespiti
 
-`services/scrapling/`
+`detectBotChallenge()` imzaları:
 
-- `StealthyFetcher.get(url, adaptive=True, headless=False)` — Scrapling'in önerdiği haliyle
-- Aynı `ScrapedItem` şemasını döner → JS tarafı şeffaf tüketir (`engine: "scrapling-service"`)
-- Deploy: Docker / Render / Fly / Railway
+| Koruma | İmza | Engel sayfası HTTP durumu |
+|---|---|---|
+| DataDome | `captcha-delivery.com`, `x-datadome`, `var dd=` | **403** |
+| Cloudflare | `cf-chl-`, `__cf_chl`, `turnstile`, `cdn-cgi/challenge` | 403 **veya** 200 |
+| PerimeterX | `px-captcha`, `_pxhd` | 403 |
+| Imperva | `incapsula`, `_incap_` | 403 |
+| Akamai | `akamaighosts`, `ak_bmsc` | 403 |
 
-```bash
-docker build -t cerberus-scrapling ./services/scrapling
-docker run -p 8000:8000 cerberus-scrapling
-curl -X POST http://localhost:8000/scrape -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.vitaminshoppe.com/p/..."}'
+> **Neden `blockedBy` önemli:** eski sürüm yalnız Cloudflare kalıplarına bakıyordu.
+> DataDome'un 403'ü hiçbir kalıba uymadığı için kod, korumayı hiç görmeden
+> `!response.ok` dalına düşüyor ve kullanıcıya *"URL'yi kontrol edin"* diyordu.
+> Doğrusu: *"URL geçerli, erişim engellendi."*
+
+## Stealth katmanının gerçek sınırları
+
+Bu katman **yalnız** tutarsız başlık kombinasyonlarını düzeltir:
+
+- `Sec-Ch-Ua-Platform` User-Agent'tan türetilir (sabit `"Windows"` değil).
+- `Referer` varsa `Sec-Fetch-Site: "same-origin"`, yoksa `"none"` — ikisi asla karıştırılmaz.
+- Retry **gerçekten farklı profil** kullanır (`pickProfile(url, attempt)`).
+- `Accept-Encoding` elle yazılmaz; undici kendi kodlamasını yönetir.
+- Cookie jar: `datadome` çerezi ısıtma turunda alınır, sonraki istekte taşınır.
+
+**Header taklidi koruma geçmez.** DataDome TLS handshake parmak izi
+(JA3/JA4) ve `c.js` çalıştırma ister. Node `fetch` ikisini de yapamaz.
+Aynı IP'den tarayıcı açılıp Node 403 alması normaldir.
+
+## Ürün kimliği — hangi alan ne işe yarar
+
+| Alan | Kaynak | Güvenilirlik |
+|---|---|---|
+| `gtin` | JSON-LD `gtin13/12/14/8`, `upc`, `ean` | ✅ **birincil eşleştirme anahtarı** — kontrol hanesi doğrulanır |
+| `asinCandidate` | yalnız Amazon kaynaklı URL | ✅ yalnız Amazon'da anlamlı |
+| `sourceSku` | JSON-LD `sku` / `productID` | ⚠️ perakende kodu, Amazon SKU'suyla birebir tutmayabilir |
+| `mpn` | JSON-LD `mpn` | ⚠️ ikincil sinyal |
+| `title` / `brand` | JSON-LD | ❌ kupon sonrası değişebilir, eşleştirmede kullanma |
+
+> **Neden `asinCandidate` artık `null` dönüyor:** eski sürüm `/p/<slug>`
+> değerini ASIN sayıyordu. `omega-3-fish-oil` → `OMEGA3FIS` gibi 10 karakterlik
+> slug'lar `/^[A-Z0-9]{10}$/` kontrolünden geçip `products.asin` olarak
+> yazılıyordu. Perakende sitesinin URL'si ASIN üretmez. Bu, kullanıcının
+> SKU→Amazon→ASIN akışında **yanlış ürüne bağlanma** riski demekti.
+
+## Fiyat geçmişi ve indirim tespiti
+
+`scraped_products` her taramada yeni satır açmaz; GTIN bazlı mevcut kaydı
+günceller. Kesintisiz seri olmadan "indirimi erken görmek" mümkün değildir.
+
+| Alan | Anlam |
+|---|---|
+| `baseline_price` | Kesintisiz fiyat listesinde ilk gözlem; fiyat yükselirse yeni tepe olur |
+| `baseline_at` | `baseline_price`ın alındığı an |
+| `first_below_baseline_at` | Fiyatın tepe altına **ilk kez** indiği an — kupon alarmının tetikleyicisi |
+| `last_price_change_at` | Son fiyat değişimi |
+
+Tek taramada indirim yalnız `offers.highPrice` / `priceSpecification` gibi
+gerçek bir liste fiyatı varsa raporlanır. JSON-LD `lowPrice` "en ucuz varyant"
+olduğu için tek başına indirim sayılmaz — aksi halde her ürün %50 indirimli
+görünürdü.
+
+## Sınırlar
+
+- **Koruma ne zaman aşılırsa aşılmaz.** Doğrusal/akış tabanlı korumalar
+  kapsam dışıdır.
+- **Coğrafya belirleyicidir.** TR/EU egress ile ABD perakende sitelerinde
+  engelleme olasılığı yüksektir. Servis ABD'de çalışmalıdır.
+- **Hız limitleri.** `/api/crawler/scrape` kullanıcı başına dakikada 5 istek,
+  URL başına 6 saatlik önbellek uygular. Bu kotayı kasıtlı olarak düşüktür.
+- `CRAWLER_ALLOWED_HOSTS` tanımlıysa yalnız o host'lar taranır.
+
+## Yapılandırma
+
+**Uygulama (`.env` / Vercel):**
+
+```dotenv
+# Boş bırakılırsa yalnız JS stealth çalışır (korumalı sitelerde başarısız).
+SCRAPLING_SERVICE_URL=https://cerberus-scrapling.fly.dev
+SCRAPLING_SERVICE_TOKEN=<en az 32 karakter, iki tarafta aynı>
+
+# Boşsa tüm public host'lar crawl edilebilir. Üretimde daraltın.
+CRAWLER_ALLOWED_HOSTS=vitaminshoppe.com,iherb.com
 ```
 
-Vercel: `Settings → Environment Variables → SCRAPLING_SERVICE_URL=https://<host>/` ekle + Redeploy.
+**Servis (`fly secrets set`):**
 
-Yoksa da sorun değil — JS crawler tek başına çalışır (graceful degradation).
+```dotenv
+SCRAPLING_SERVICE_TOKEN=<aynı değer>
+# ABD residential proxy — DataDome datacenter IP'sini (Fly dahil) eler.
+SCRAPER_PROXY_URL=http://user:pass@gate.provider.com:7000
+```
 
-## Drive içe aktarım (tek sheet)
-
-- Kullanıcı teyidi: Drive tablosu **tek sheet**. İthalat her zaman `workbook.SheetNames[0]`'ı okur.
-- `/export?format=xlsx` üzerinden 15 sn/20 MB limitli çekim, `xlsx` ile `SheetNames[0]` ayrıştırması.
-- İkinci sheet vs. varsa görmezden gelinir — tasarım gereği.
+> **Sıralı gerçeklik:** gerçek Chromium **gerekli ama yeterli değil**.
+> DataDome yalnız TLS parmak izine değil, IP'nin datacenter olmasına da bakar.
+> Fly/Render/Hetzner IP'leri yayınlanmış listelerdedir. Üçüncü katman
+> **ABD residential proxy**'dir. Bütçe buna ayrılmalı — indirim takibi
+> işinizin temelidir, engellenmemek her şeyden ucuzdur.
 
 ## İlgili dosyalar
 
-- `src/lib/crawler/scraper.ts` — ana scraper + stealth + fallback
-- `src/app/api/crawler/scrape/route.ts` — POST throttle + cache + audit
-- `src/app/api/crawler/import/route.ts` — seçilen ürünleri `productMasters`/`supplierOffers`'a yazar
-- `services/scrapling/main.py` — FastAPI + Scrapling
-- `src/lib/settings.ts` — ROI eşikleri (aşağıya bak)
+| Dosya | Rol |
+|---|---|
+| `src/lib/crawler/scraper.ts` | stealth fetch, koruma tespiti, GTIN/indirim ayrıştırma |
+| `src/lib/crawler/scraper.test.ts` | GTIN kontrol hanesi testleri |
+| `src/lib/crawler/crawlerBehavior.test.ts` | sahte ASIN + koruma tespiti regresyonları |
+| `src/app/api/crawler/scrape/route.ts` | throttle, önbellek, fiyat geçmişi, audit |
+| `src/app/api/crawler/import/route.ts` | GTIN/ASIN ile ürün eşleştirme, katalog yazımı |
+| `services/scrapling/` | gerçek Chromium servisi → [servis README'si](./../services/scrapling/README.md) |
+| `src/features/crawler/CrawlerPanel.tsx` | arayüz: indirim rozeti, GTIN, engel paneli |

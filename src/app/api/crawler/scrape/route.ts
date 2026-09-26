@@ -5,7 +5,7 @@ import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { parseBody, crawlerScrapeSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { scrapeUrl } from "@/lib/crawler/scraper";
-import { desc, eq, and, gte } from "drizzle-orm";
+import { desc, eq, and, gte, inArray } from "drizzle-orm";
 
 /**
  * POST /api/crawler/scrape — URL'i çek, ürünleri çıkar, DB'ye yaz
@@ -88,32 +88,148 @@ export async function POST(req: Request) {
 
     try {
       const result = await scrapeUrl(url);
+      const now = new Date();
 
-      // Ürünleri yaz
-      const toInsert = result.products.map((p) => ({
-        jobId: job.id,
-        sourceUrl: p.sourceUrl,
-        sourceDomain: p.sourceDomain,
-        title: p.title,
-        brand: p.brand,
-        price: p.price !== null ? p.price.toFixed(2) : null,
-        currency: p.currency,
-        imageUrl: p.imageUrl,
-        availability: p.availability,
-        asinCandidate: p.asinCandidate,
-        status: "PENDING" as const,
-      }));
+      // Fiyat geçmişi: her taramada yeni satır açmak yerine GTIN bazlı mevcut
+      // kaydı güncelle. "İndirimi erken görmek" ancak kesintisiz seri varsa
+      // çalışır; her taramada ayrı satır açmak geçmişi parçalar ve
+      // indirim anını kaybettirir.
+      const gtins = result.products.map((p) => p.gtin).filter((g): g is string => Boolean(g));
+      const existing = gtins.length
+        ? await db
+            .select()
+            .from(scrapedProducts)
+            .where(and(inArray(scrapedProducts.gtin, gtins), eq(scrapedProducts.sourceDomain, result.sourceDomain)))
+        : [];
 
-      let inserted: typeof scrapedProducts.$inferSelect[] = [];
-      if (toInsert.length) {
-        inserted = await db.insert(scrapedProducts).values(toInsert).returning();
+      const byGtin = new Map(existing.map((row) => [row.gtin as string, row]));
+
+      const toInsert: (typeof scrapedProducts.$inferInsert)[] = [];
+      const toUpdate: Array<{
+        id: number;
+        patch: Partial<typeof scrapedProducts.$inferInsert>;
+        priceDrop: { title: string; from: string; to: string; pct: number } | null;
+      }> = [];
+
+      for (const p of result.products) {
+        const price = p.price !== null ? p.price.toFixed(2) : null;
+        const prior = p.gtin ? byGtin.get(p.gtin) : undefined;
+
+        if (prior) {
+          // Kesintisiz seri kuralı: fiyat baseline'ın altına inerse indirim
+          // anı bir kez kaydedilir; baseline'ın üstine çıkılırsa seri sıfırlanır.
+          const priorBaseline = prior.baselinePrice !== null ? Number(prior.baselinePrice) : null;
+          const nextBaseline =
+            priorBaseline === null ? p.price : p.price !== null && p.price > priorBaseline ? p.price : priorBaseline;
+
+          const belowBaseline =
+            nextBaseline !== null && p.price !== null && p.price < nextBaseline ? nextBaseline : null;
+
+          const patch: Partial<typeof scrapedProducts.$inferInsert> = {
+            sourceUrl: p.sourceUrl,
+            title: p.title,
+            brand: p.brand,
+            price,
+            currency: p.currency,
+            imageUrl: p.imageUrl,
+            availability: p.availability,
+            asinCandidate: p.asinCandidate,
+            sourceSku: p.sourceSku,
+            mpn: p.mpn,
+            baselinePrice: nextBaseline !== null ? nextBaseline.toFixed(2) : null,
+            baselineAt: priorBaseline === null ? (p.price !== null ? now : prior.baselineAt) : prior.baselineAt,
+            firstBelowBaselineAt: belowBaseline !== null ? (prior.firstBelowBaselineAt ?? now) : prior.firstBelowBaselineAt,
+            lastPriceChangeAt: prior.price !== null && price !== null && Number(prior.price) !== p.price ? now : prior.lastPriceChangeAt,
+          };
+
+          toUpdate.push({
+            id: prior.id,
+            patch,
+            priceDrop:
+              belowBaseline !== null && prior.price !== null && Number(prior.price) !== p.price
+                ? {
+                    title: p.title,
+                    from: Number(prior.price).toFixed(2),
+                    to: p.price!.toFixed(2),
+                    pct: Math.round(((Number(prior.price) - p.price!) / Number(prior.price)) * 100),
+                  }
+                : null,
+          });
+        } else {
+          toInsert.push({
+            jobId: job.id,
+            sourceUrl: p.sourceUrl,
+            sourceDomain: p.sourceDomain,
+            title: p.title,
+            brand: p.brand,
+            price,
+            currency: p.currency,
+            imageUrl: p.imageUrl,
+            availability: p.availability,
+            asinCandidate: p.asinCandidate,
+            sourceSku: p.sourceSku,
+            gtin: p.gtin,
+            mpn: p.mpn,
+            // İlk gözlem kesintisiz serinin başıdır; sonradan düşerse
+            // firstBelowBaselineAt dolar.
+            baselinePrice: p.price !== null ? p.price.toFixed(2) : null,
+            baselineAt: p.price !== null ? now : null,
+            lastPriceChangeAt: now,
+            status: "PENDING",
+          });
+        }
       }
+
+      if (toInsert.length) {
+        // Aynı GTIN bu tarama içinde iki kez geçerse ikincisi elenir.
+        const seenGtin = new Set<string>();
+        for (const row of toInsert) {
+          if (row.gtin) {
+            if (seenGtin.has(row.gtin)) continue;
+            seenGtin.add(row.gtin);
+          }
+        }
+        const deduped = toInsert.filter((row, i) => {
+          if (!row.gtin) return true;
+          return toInsert.findIndex((r) => r.gtin === row.gtin) === i;
+        });
+        await db.insert(scrapedProducts).values(deduped);
+      }
+
+      const priceDrops: Array<{ title: string; from: string; to: string; pct: number }> = [];
+      for (const update of toUpdate) {
+        await db.update(scrapedProducts).set(update.patch).where(eq(scrapedProducts.id, update.id));
+        if (update.priceDrop) priceDrops.push(update.priceDrop);
+      }
+
+      // Sonuçları okuma: güncellenen + yeni.
+      const allGtin = result.products.map((p) => p.gtin).filter((g): g is string => Boolean(g));
+      const rows = allGtin.length
+        ? await db
+            .select()
+            .from(scrapedProducts)
+            .where(and(inArray(scrapedProducts.gtin, allGtin), eq(scrapedProducts.sourceDomain, result.sourceDomain)))
+        : [];
+
+      const inserted = rows;
 
       await db.update(scrapeJobs).set({
         status: "DONE",
         productCount: inserted.length,
-        completedAt: new Date(),
+        completedAt: now,
       }).where(eq(scrapeJobs.id, job.id));
+
+      const warnings = [...result.warnings];
+      if (priceDrops.length) {
+        warnings.unshift(
+          `🔻 ${priceDrops.length} üründe fiyat düştü: ` +
+            priceDrops
+              .slice(0, 3)
+              .map((d) => `${d.title.slice(0, 40)} $${d.from}→$${d.to} (%${d.pct})`)
+              .join(", ") +
+            (priceDrops.length > 3 ? ` +${priceDrops.length - 3} tane daha` : "")
+        );
+      }
 
       // Audit
       const { auditLogs } = await import("@/db/schema");
@@ -124,7 +240,7 @@ export async function POST(req: Request) {
         targetEntity: `${normalizedDomain} (${inserted.length} ürün)`,
         beforeState: url,
         afterState: "SCRAPED",
-        details: `Crawler: ${url} → ${inserted.length} ürün, ${result.warnings.length} uyarı`,
+        details: `Crawler: ${url} → ${inserted.length} ürün, ${priceDrops.length} fiyat düşüşü, ${warnings.length} uyarı`,
       });
 
       return NextResponse.json({
@@ -132,19 +248,25 @@ export async function POST(req: Request) {
         sourceUrl: result.sourceUrl,
         sourceDomain: result.sourceDomain,
         products: inserted,
-        warnings: result.warnings,
+        warnings,
+        priceDrops,
+        engine: result.engine,
+        blockedBy: result.blockedBy,
         cached: false,
         fetchedAt: result.fetchedAt,
         isListingPage: result.isListingPage,
       });
     } catch (scrapeErr: unknown) {
-      const typedError = scrapeErr as Error & { status?: number };
+      const typedError = scrapeErr as Error & { status?: number; blockedBy?: string };
       const msg = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
       await db.update(scrapeJobs).set({ status: "FAILED", error: msg.slice(0, 1000), completedAt: new Date() }).where(eq(scrapeJobs.id, job.id));
       const status =
         typedError.status ??
         (msg.includes("taranamadı") || msg.includes("çıkarılamadı") ? 422 : 502);
-      return NextResponse.json({ error: msg, jobId: job.id }, { status });
+      return NextResponse.json(
+        { error: msg, jobId: job.id, blockedBy: typedError.blockedBy ?? null },
+        { status }
+      );
     }
   } catch (error: unknown) {
     return handleRouteError("POST /api/crawler/scrape", error);

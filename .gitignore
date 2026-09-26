@@ -44,3 +44,6 @@ yarn-error.log*
 
 # Yerel geliştirme veritabanı (PGlite) — sürüm kontrolüne girmez
 .pglite-dev/
+
+__pycache__/
+*.pyc

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Globe, Search, Loader2, ExternalLink, Plus, CheckCircle2, AlertTriangle, ImageIcon } from "lucide-react";
+import { Globe, Search, Loader2, ExternalLink, Plus, CheckCircle2, AlertTriangle, ImageIcon, TrendingDown, Barcode, ShieldAlert } from "lucide-react";
 
 interface ScrapedRow {
   id: number;
@@ -15,29 +15,52 @@ interface ScrapedRow {
   imageUrl: string | null;
   availability: string;
   asinCandidate: string | null;
+  sourceSku: string | null;
+  gtin: string | null;
+  baselinePrice: string | null;
+  baselineAt: string | null;
+  firstBelowBaselineAt: string | null;
   status: string;
+}
+
+interface PriceDrop {
+  title: string;
+  from: string;
+  to: string;
+  pct: number;
 }
 
 export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
   const [url, setUrl] = useState("https://www.vitaminshoppe.com/");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ jobId: number; sourceDomain: string; products: ScrapedRow[]; warnings: string[]; cached: boolean; fetchedAt: string; isListingPage: boolean } | null>(null);
+  const [result, setResult] = useState<{ jobId: number; sourceDomain: string; products: ScrapedRow[]; warnings: string[]; priceDrops?: PriceDrop[]; engine?: string; blockedBy?: string | null; cached: boolean; fetchedAt: string; isListingPage: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [blockedBy, setBlockedBy] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
 
   const presets = [
-    { label: "Vitamin Shoppe — Vitamins", url: "https://www.vitaminshoppe.com/c/vitamins-supplements" },
+    { label: "Vitamin Shoppe — Vitaminler", url: "https://www.vitaminshoppe.com/c/vitamins-supplements" },
     { label: "Vitamin Shoppe — Protein", url: "https://www.vitaminshoppe.com/c/sports-nutrition/protein" },
     { label: "iHerb (örnek)", url: "https://www.iherb.com/c/vitamins" },
     { label: "Walgreens (örnek)", url: "https://www.walgreens.com/store/c/vitamins-and-supplements/ID=360518-tier2general" },
   ];
 
+  const BLOCK_LABEL: Record<string, string> = {
+    datadome: "DataDome",
+    cloudflare: "Cloudflare",
+    akamai: "Akamai",
+    perimeterx: "PerimeterX",
+    imperva: "Imperva",
+    generic: "bilinmeyen koruma",
+  };
+
   async function handleScrape() {
     if (!url.trim()) return;
     setLoading(true);
     setError(null);
+    setBlockedBy(null);
     setResult(null);
     setSelected(new Set());
     setImportMsg(null);
@@ -48,7 +71,10 @@ export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
         body: JSON.stringify({ url: url.trim(), storeCode: defaultStore }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Tarama başarısız");
+      if (!res.ok) {
+        setBlockedBy(data.blockedBy ?? null);
+        throw new Error(data.error || "Tarama başarısız");
+      }
       setResult(data);
       // varsayılan hepsini seç
       setSelected(new Set(data.products.map((p: ScrapedRow) => p.id)));
@@ -102,8 +128,9 @@ export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
           <div>
             <h2 className="text-sm font-bold text-ink">Crawler Keşif Masası</h2>
             <p className="text-xs text-ink-muted font-mono-tech">
-              Kaynak site URL’sini yapıştırın — sistem ürünleri otomatik çeker, listeler, siz seçip kataloğa ekleyin.
-              İlk sürüm <span className="text-brand-soft font-bold">vitaminshoppe.com</span> için optimize, diğer sitelerde generic JSON-LD fallback.
+              <span className="text-brand-soft font-bold">İndirim Takip Masası</span> — daha önce sattığınız ürünlerin
+              alış fiyatını izleyin, indirimi erken görün. İlk sürüm{" "}
+              <span className="text-brand-soft font-bold">vitaminshoppe.com</span> için optimize.
             </p>
           </div>
         </div>
@@ -144,17 +171,42 @@ export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
           </div>
 
           <div className="rounded-lg bg-surface-2 border border-line p-3 text-[11px] font-mono-tech text-ink-faint leading-relaxed">
-            <span className="font-bold text-ink-muted">Nasıl çalışır?</span> Sunucu URL’i <span className="text-ink">12 sn timeout + 2 MB limit + robots saygısı</span> ile çeker.
-            Önce <code className="bg-surface-3 px-1 rounded">vitaminshoppe parser</code>, sonra <code className="bg-surface-3 px-1 rounded">JSON-LD</code>, sonra generic fallback dener.
-            Aynı URL 6 saat içinde tekrar taranırsa <span className="text-positive">önbellekten</span> döner (kota koruması). Seçtikleriniz tek tıkla ürün kataloğuna eklenir ve fiyat gözlemi oluşturur.
+            <span className="font-bold text-ink-muted">Nasıl çalışır?</span> Sunucu URL’yi{" "}
+            <span className="text-ink">15 sn timeout + 3 MB limit</span> ile çeker. Önce{" "}
+            <code className="bg-surface-3 px-1 rounded">JSON-LD</code>, sonra generic fallback dener.
+            <br />
+            <span className="font-bold text-ink-muted">Fiyat geçmişi:</span> her tarama GTIN bazlı satırı
+            günceller; ilk fiyat <code className="bg-surface-3 px-1 rounded">baseline</code> olur. Fiyat baseline’ın
+            altına düşünce <span className="text-positive">ilk kez düştüğü tarih</span> kilitlenir — kupon/peşin indirim
+            fırsatını kaçırmamak için gereken budur.
+            <br />
+            <span className="font-bold text-ink-muted">GTIN:</span> perakende slug’ı Amazon ASIN’i{" "}
+            <span className="text-danger">değildir</span>. Amazon’daki karşılığı bulmak için{" "}
+            <span className="text-ink">GTIN/UPC</span> kullanılır — başlık metni kupon sonrası değiştiği için
+            güvenilmezdir. Tarama yaparken <span className="text-ink">ürün sayfası</span> (kategori listesi değil)
+            kullanın; GTIN orada bulunur.
+            <br />
+            Aynı URL 6 saat içinde tekrar taranırsa <span className="text-positive">önbellekten</span> döner (kota
+            koruması). Seçtikleriniz tek tıkla ürün kataloğuna eklenir ve fiyat gözlemi oluşturur.
           </div>
         </div>
       </div>
 
       {error && (
         <div className="flex gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
-          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>{error}</span>
+          {blockedBy ? <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" /> : <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />}
+          <div className="min-w-0">
+            <div>{error}</div>
+            {blockedBy && (
+              <div className="mt-2 rounded-lg border border-danger/25 bg-surface-1/60 px-3 py-2 text-[11px] font-mono-tech leading-relaxed text-ink-muted">
+                <span className="font-bold text-ink">Engelleyen: {BLOCK_LABEL[blockedBy] ?? blockedBy}</span>
+                <br />
+                Tarayıcıda çalışması normal — koruma gerçek bir tarayıcı parmak izi
+                (TLS + JavaScript) istiyor. Header taklidi yetmez. Çözüm: gerçek
+                Chromium çalıştıran Scrapling servisi, tercihen ABD kaynaklı.
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -166,6 +218,12 @@ export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
               <span className="text-ink-muted"> • {result.sourceDomain}</span>
               <span className="text-ink-faint"> • {result.isListingPage ? "Liste sayfası" : "Tek ürün sayfası"}</span>
               {result.cached && <span className="ml-2 rounded bg-positive/15 text-positive px-1.5 py-0.5 text-[10px] font-bold">ÖNBELLEK</span>}
+              {result.engine === "scrapling-service" && <span className="ml-2 rounded bg-brand/15 text-brand-soft px-1.5 py-0.5 text-[10px] font-bold">GERÇEK TARAYICI</span>}
+              {result.priceDrops && result.priceDrops.length > 0 && (
+                <span className="ml-2 rounded bg-positive/15 text-positive px-1.5 py-0.5 text-[10px] font-bold">
+                  {result.priceDrops.length} FİYAT DÜŞÜŞÜ
+                </span>
+              )}
               <span className="text-ink-faint ml-2">{new Date(result.fetchedAt).toLocaleString("tr-TR")}</span>
             </div>
             <div className="flex items-center gap-2">
@@ -232,13 +290,41 @@ export function CrawlerPanel({ defaultStore }: { defaultStore: string }) {
                         <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${p.availability === "IN_STOCK" ? "bg-positive/15 text-positive" : p.availability === "OUT_OF_STOCK" ? "bg-danger/15 text-danger" : "bg-surface-3 text-ink-faint"}`}>
                           {p.availability === "IN_STOCK" ? "Stokta" : p.availability === "OUT_OF_STOCK" ? "Tükendi" : "Bilinmiyor"}
                         </span>
-                        {p.asinCandidate && <span className="font-mono-tech text-[10px] text-ink-faint">{p.asinCandidate.slice(0, 16)}</span>}
+                        {p.asinCandidate && <span className="font-mono-tech text-[10px] text-brand-soft">{p.asinCandidate}</span>}
+                        {p.sourceSku && <span className="font-mono-tech text-[10px] text-ink-faint">SKU {p.sourceSku}</span>}
                       </div>
-                      <div className="mt-1.5 flex items-baseline gap-2">
+
+                      {/* GTIN: Amazon eşleştirmenin gerçek anahtarı. */}
+                      <div className="mt-1 flex items-center gap-1 text-[10px] text-ink-faint font-mono-tech">
+                        <Barcode className="h-3 w-3 shrink-0" />
+                        {p.gtin ? (
+                          <span className="text-ink-muted" title="GTIN/UPC — Amazon kataloğunda bu numara birebir tutar">
+                            GTIN {p.gtin}
+                          </span>
+                        ) : (
+                          <span title="GTIN yok — Amazon eşleştirmesi yapılamaz. Ürün sayfasını (kategori değil) tarayın.">
+                            GTIN yok
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-1.5 flex items-baseline gap-2 flex-wrap">
                         {p.price !== null ? (
                           <span className="text-sm font-bold text-caution tabular">${Number(p.price).toFixed(2)}</span>
                         ) : (
                           <span className="text-xs text-ink-faint">Fiyat yok</span>
+                        )}
+                        {/* Geçmişe göre indirim — kullanıcının asıl takip ettiği şey. */}
+                        {p.baselinePrice !== null && p.price !== null && Number(p.price) < Number(p.baselinePrice) && (
+                          <span className="inline-flex items-center gap-0.5 rounded bg-positive/15 px-1.5 py-0.5 text-[10px] font-bold text-positive">
+                            <TrendingDown className="h-3 w-3" />
+                            %{Math.round(((Number(p.baselinePrice) - Number(p.price)) / Number(p.baselinePrice)) * 100)} indirim
+                          </span>
+                        )}
+                        {p.firstBelowBaselineAt && (
+                          <span className="text-[10px] font-mono-tech text-positive">
+                            ilk kez {new Date(p.firstBelowBaselineAt).toLocaleDateString("tr-TR")} altında
+                          </span>
                         )}
                         <span className="text-[11px] text-ink-faint">{p.sourceDomain}</span>
                       </div>

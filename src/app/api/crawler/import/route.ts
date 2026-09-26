@@ -31,16 +31,46 @@ export async function POST(req: Request) {
     const warnings: string[] = [];
 
     for (const sp of pending) {
-      // ASIN adayı yoksa üret
-      const rawAsin = (sp.asinCandidate || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
-      const asin = /^[A-Z0-9]{10}$/.test(rawAsin) ? rawAsin : `SC${String(sp.id).padStart(8, "0")}`;
-      // Mevcut ürünü ASIN ile bul veya oluştur
-      const existing = await db.select().from(products).where(eq(products.asin, asin)).limit(1);
+      // Ürün kimliği önceliği: gerçek ASIN > GTIN ile mevcut ürün > yeni kayıt.
+      //
+      // ASIN YALNIZ Amazon kaynaklı URL'den kabul edilir. Perakende slug'ı
+      // ("omega-3-fish-oil" → "OMEGA3FIS") ASIN DEĞİLDİR; 10 karakterli her
+      // slug bu yüzden ürün kataloğunda sahte ASIN olarak yazılıyordu.
+      const realAsin = sp.asinCandidate && /^[A-Z0-9]{10}$/.test(sp.asinCandidate) ? sp.asinCandidate : null;
+
+      // GTIN varsa: daha önce bu fiziksel ürünü Amazon tarafında eşleştirdi miyiz?
+      // `product_source_keys` benzeri bir tablo yerine, mevcut üründe saklanan
+      // `supplier_offers` üzerinden GTIN geçmişi aranır.
+      let matchedProductId: number | null = null;
+      if (realAsin) {
+        const byAsin = await db.select().from(products).where(eq(products.asin, realAsin)).limit(1);
+        if (byAsin.length) matchedProductId = byAsin[0].id;
+      }
+      if (matchedProductId === null && sp.gtin) {
+        // GTIN → ürün eşleştirmesi. `products.upc` alanı bu iş için zaten var
+        // (Amazon katalogundaki `gtin` ile aynı fiziksel ürünü gösterir) ve
+        // `api/intelligence` UPC üzerinden eşleştirme yapıyor.
+        const byGtin = await db
+          .select({ id: products.id })
+          .from(products)
+          .where(eq(products.upc, sp.gtin))
+          .limit(1);
+        if (byGtin.length) matchedProductId = byGtin[0].id;
+      }
+
       let productId: number;
-      if (existing.length) {
-        productId = existing[0].id;
-        warnings.push(`${sp.title.slice(0, 40)} — ASIN ${asin} zaten var, fiyat gözlemi eklendi.`);
+      if (matchedProductId !== null) {
+        productId = matchedProductId;
+        warnings.push(
+          `${sp.title.slice(0, 40)} — mevcut ürüne bağlandı${realAsin ? ` (ASIN ${realAsin})` : ` (GTIN ${sp.gtin})`}, fiyat gözlemi eklendi.`
+        );
       } else {
+        const asin = realAsin ?? `SC${String(sp.id).padStart(8, "0")}`;
+        if (!realAsin) {
+          warnings.push(
+            `${sp.title.slice(0, 40)} — kaynak site perakende olduğu için ASIN bulunamadı; geçici kimlik (${asin}) atandı. GTIN ile Amazon eşleştirmesi yapılmalı.`
+          );
+        }
         const [created] = await db.insert(products).values({
           asin,
           title: sp.title,
@@ -48,6 +78,10 @@ export async function POST(req: Request) {
           category: "UNCATEGORIZED",
           imageUrl: sp.imageUrl,
           amazonUrl: sp.sourceUrl,
+          // GTIN varsa `upc` alanına yazılır: aynı fiziksel ürünün Amazon
+          // katalogundaki kalıcı kimliği budur. GTIN yoksa NULL kalır ve
+          // eşleştirme yapılamaz — bu bilerek sessizce uydurulmaz.
+          upc: sp.gtin,
           lifecycleStage: "DISCOVERED",
           isActive: true,
         }).returning();
@@ -58,7 +92,13 @@ export async function POST(req: Request) {
           toStage: "DISCOVERED",
           actorName: user.name,
           reason: `Crawler: ${sp.sourceDomain} keşfi`,
-          contextSnapshot: { sourceUrl: sp.sourceUrl, price: sp.price, storeCode },
+          contextSnapshot: {
+            sourceUrl: sp.sourceUrl,
+            price: sp.price,
+            storeCode,
+            gtin: sp.gtin,
+            sourceSku: sp.sourceSku,
+          },
         });
       }
 
@@ -77,7 +117,12 @@ export async function POST(req: Request) {
       }
 
       await db.update(scrapedProducts).set({ status: "IMPORTED" }).where(eq(scrapedProducts.id, sp.id));
-      results.push({ scrapedId: sp.id, productId, asin, title: sp.title });
+      const [product] = await db
+        .select({ asin: products.asin })
+        .from(products)
+        .where(eq(products.id, productId))
+        .limit(1);
+      results.push({ scrapedId: sp.id, productId, asin: product?.asin ?? "", title: sp.title });
     }
 
     await db.insert(auditLogs).values({
