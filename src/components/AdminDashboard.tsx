@@ -40,7 +40,7 @@ export function AdminDashboard({
   onDataRefresh,
 }: AdminDashboardProps) {
   const [activeSubTab, setActiveSubTab] = useState<
-    "STORES" | "USERS" | "ORDERS_CRUD" | "SP_API" | "AUDIT" | "DB_TOOLS" | "SETTINGS"
+    "STORES" | "USERS" | "ORDERS_CRUD" | "SP_API" | "AUDIT" | "DSR" | "DB_TOOLS" | "SETTINGS"
   >("STORES");
 
   const [stores, setStores] = useState<any[]>([]);
@@ -58,6 +58,16 @@ export function AdminDashboard({
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageCount, setAuditPageCount] = useState(1);
   const [auditTotal, setAuditTotal] = useState(0);
+
+  // KVKK m.11 Veri Sahibi Talebi (DSR) — backend (GET/POST /api/admin/dsr)
+  // zaten tamdı (dışa aktarım + geri döndürülemez anonimleştirme) ama admin
+  // panelinde hiçbir UI'dan erişilemiyordu; yalnız doğrudan API çağrısıyla
+  // (curl/Postman) kullanılabiliyordu. Yasal bir yükümlülüğün fiilen
+  // kullanılamaz olması ciddi bir eksiklikti.
+  const [dsrEmail, setDsrEmail] = useState("");
+  const [dsrResult, setDsrResult] = useState<any | null>(null);
+  const [dsrLoading, setDsrLoading] = useState(false);
+  const [dsrAnonymizing, setDsrAnonymizing] = useState(false);
 
   // Filter for orders subtab
   const [orderStoreFilter, setOrderStoreFilter] = useState("ALL");
@@ -355,6 +365,60 @@ export function AdminDashboard({
       }
     } catch {
       showFeedback("Silme başarısız oldu", "error");
+    }
+  };
+
+  const handleDsrExport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = dsrEmail.trim().toLowerCase();
+    if (!email) return;
+    setDsrLoading(true);
+    setDsrResult(null);
+    try {
+      const res = await fetch(`/api/admin/dsr?email=${encodeURIComponent(email)}`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setDsrResult(data);
+      } else {
+        showFeedback(data.error || "Veri dışa aktarımı başarısız", "error");
+      }
+    } catch {
+      showFeedback("Veri dışa aktarımı başarısız oldu", "error");
+    } finally {
+      setDsrLoading(false);
+    }
+  };
+
+  const handleDsrAnonymize = async () => {
+    const email = dsrEmail.trim().toLowerCase();
+    if (!email) return;
+    if (
+      !window.confirm(
+        `${email} adresine ait kişi KALICI olarak anonimleştirilecek (isim/e-posta/parola geri döndürülemez şekilde değiştirilir, siparişlerdeki iletişim e-postası maskelenir). Bu işlem GERİ ALINAMAZ. Devam edilsin mi?`
+      )
+    ) {
+      return;
+    }
+    setDsrAnonymizing(true);
+    try {
+      const res = await fetch("/api/admin/dsr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, confirm: "ANONYMIZE" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFeedback(data.message || "Kişi anonimleştirildi.");
+        setDsrResult(null);
+        setDsrEmail("");
+        fetchAdminData();
+      } else {
+        showFeedback(data.error || "Anonimleştirme başarısız", "error");
+      }
+    } catch {
+      showFeedback("Anonimleştirme başarısız oldu", "error");
+    } finally {
+      setDsrAnonymizing(false);
     }
   };
 
@@ -724,6 +788,20 @@ export function AdminDashboard({
 
         {currentUser.role === "ADMIN" && (
           <button
+            onClick={() => setActiveSubTab("DSR")}
+            className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap ${
+              activeSubTab === "DSR"
+                ? "bg-brand text-ink shadow-lg shadow-brand/25"
+                : "text-ink-muted hover:text-ink hover:bg-surface-2"
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>6. KVKK — Veri Sahibi Talebi</span>
+          </button>
+        )}
+
+        {currentUser.role === "ADMIN" && (
+          <button
             onClick={() => setActiveSubTab("DB_TOOLS")}
             className={`px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 whitespace-nowrap border ${
               activeSubTab === "DB_TOOLS"
@@ -732,7 +810,7 @@ export function AdminDashboard({
             }`}
           >
             <Database className="w-4 h-4 text-danger" />
-            <span>6. 🧹 Veritabanı Temizleme &amp; Sıfırlama Araçları</span>
+            <span>7. 🧹 Veritabanı Temizleme &amp; Sıfırlama Araçları</span>
           </button>
         )}
         <button
@@ -744,7 +822,7 @@ export function AdminDashboard({
           }`}
         >
           <SlidersHorizontal className="w-4 h-4" />
-          <span>7. ⚙️ Eşikler &amp; Keepa Ayarları</span>
+          <span>8. ⚙️ Eşikler &amp; Keepa Ayarları</span>
         </button>
       </div>
 
@@ -1373,7 +1451,97 @@ export function AdminDashboard({
       )}
 
       {/* ========================================================================= */}
-      {/* 6. VERİTABANI TEMİZLEME & SIFIRLAMA ARAÇLARI (DATABASE CLEAN & RESET)      */}
+      {/* 6. KVKK — VERİ SAHİBİ TALEBİ (DSR)                                        */}
+      {/* ========================================================================= */}
+      {activeSubTab === "DSR" && currentUser.role === "ADMIN" && (
+        <div className="space-y-4">
+          <div className="bg-surface-1 border border-line rounded-2xl p-5">
+            <h3 className="text-sm font-bold text-ink uppercase font-mono-tech flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-brand-soft" />
+              KVKK m.11 — Veri Sahibi Talebi (Erişim / Silme-Anonimleştirme)
+            </h3>
+            <p className="text-xs text-ink-muted font-mono-tech mt-2 leading-relaxed">
+              Bir kişi kendisiyle ilgili tutulan verilerin dökümünü isteyebilir veya
+              silinmesini/anonimleştirilmesini talep edebilir. Bu ekran her iki talebi de
+              işleme koyar. Anonimleştirme geri döndürülemez.
+            </p>
+          </div>
+
+          <form onSubmit={handleDsrExport} className="flex items-center gap-2 font-mono-tech text-xs">
+            <input
+              type="email"
+              required
+              placeholder="kisi@ornek.com"
+              value={dsrEmail}
+              onChange={(e) => setDsrEmail(e.target.value)}
+              className="flex-1 max-w-md px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+            />
+            <button
+              type="submit"
+              disabled={dsrLoading}
+              className="px-4 py-2 bg-brand hover:bg-brand-soft text-ink rounded-xl font-bold uppercase transition disabled:opacity-50"
+            >
+              {dsrLoading ? "Aranıyor..." : "Verileri Dışa Aktar"}
+            </button>
+          </form>
+
+          {dsrResult && (
+            <div className="bg-surface-1 border border-line rounded-2xl p-5 space-y-4 font-mono-tech text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-ink-muted">
+                  Dışa aktarım zamanı: {new Date(dsrResult.exportedAt).toLocaleString()}
+                </span>
+                <button
+                  onClick={handleDsrAnonymize}
+                  disabled={dsrAnonymizing || !dsrResult.data?.userAccount?.length}
+                  title={
+                    !dsrResult.data?.userAccount?.length
+                      ? "Bu e-postayla eşleşen bir kullanıcı hesabı yok"
+                      : "Kalıcı olarak anonimleştir"
+                  }
+                  className="px-4 py-2 bg-danger/15 hover:bg-danger text-danger hover:text-ink rounded-xl font-bold uppercase transition disabled:opacity-40"
+                >
+                  {dsrAnonymizing ? "İşleniyor..." : "Bu Kişiyi Anonimleştir (KALICI)"}
+                </button>
+              </div>
+
+              <div>
+                <h4 className="text-ink-muted uppercase text-[11px] mb-1.5">Kullanıcı Hesabı</h4>
+                {dsrResult.data.userAccount.length === 0 ? (
+                  <p className="text-ink-faint">Bu e-postayla eşleşen bir kullanıcı hesabı yok.</p>
+                ) : (
+                  dsrResult.data.userAccount.map((u: any) => (
+                    <div key={u.id} className="bg-surface-base p-3 rounded-xl border border-line">
+                      #{u.id} {u.name} — {u.email} — {u.role} — {u.storeCode}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div>
+                <h4 className="text-ink-muted uppercase text-[11px] mb-1.5">
+                  Bu İletişim E-postasıyla Siparişler ({dsrResult.data.ordersWithThisContactEmail.length})
+                </h4>
+                <div className="max-h-60 overflow-y-auto space-y-1.5">
+                  {dsrResult.data.ordersWithThisContactEmail.map((o: any) => (
+                    <div key={o.id} className="bg-surface-base p-2.5 rounded-lg border border-line">
+                      {o.orderNumber} — {o.asin} — {o.buyerStore}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-ink-faint">
+                Denetim izinde bu kişiye {dsrResult.data.auditLogMentions} kayıt geçiyor (yalnız sayı;
+                içerikler ayrı talep gerektirir). Saklama süreleri: {dsrResult.retention}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 7. VERİTABANI TEMİZLEME & SIFIRLAMA ARAÇLARI (DATABASE CLEAN & RESET)      */}
       {/* ========================================================================= */}
       {activeSubTab === "DB_TOOLS" && currentUser.role === "ADMIN" && (
         <div className="space-y-6">
