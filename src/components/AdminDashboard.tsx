@@ -1735,6 +1735,35 @@ export function AdminDashboard({
       )}
 
       {/* ========================================================================= */}
+      {/* 8. EŞİKLER & KEEPA AYARLARI (SETTINGS)                                    */}
+      {/* ========================================================================= */}
+      {/*
+        "8. ⚙️ Eşikler & Keepa Ayarları" sekme düğmesi vardı ama içerik hiç
+        bağlanmamıştı — tıklandığında tamamen boş bir panel görünüyordu.
+        Oysa arkasındaki her şey zaten tam çalışır durumdaydı: GET/PUT
+        /api/settings ucu (ROI eşiklerini app_settings.roi_thresholds'ta
+        saklar, Keepa API anahtarını ENV/DB önceliğiyle yönetir) ve onu
+        kullanan ThresholdSettings bileşeni (src/features/settings) zaten
+        yazılmış, test edilebilir ve import edilmişti — sadece JSX'te hiç
+        render edilmiyordu. Bu, REORDER/LIQUIDATE karar motorunun ROI
+        eşiklerini ve Keepa entegrasyonunun API anahtarını admin panelinden
+        hiç yapılandırılamaz bırakıyordu. Tek eksik olan bu render satırıydı.
+      */}
+      {activeSubTab === "SETTINGS" && (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-ink uppercase font-mono-tech">
+              ROI Karar Eşikleri &amp; Keepa Entegrasyonu
+            </h3>
+            <p className="text-xs text-ink-muted font-mono-tech mt-1">
+              Bu ayarlar anında tüm mağazalardaki satın alma karar motoruna yansır.
+            </p>
+          </div>
+          <ThresholdSettings />
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* MODAL: YENİ MAĞAZA TANIMLA                                                */}
       {/* ========================================================================= */}
       {isNewStoreModalOpen && (
