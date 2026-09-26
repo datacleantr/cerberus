@@ -315,6 +315,28 @@ export const storeUpdateSchema = z.object({
   purchaseApprovalThreshold: z.coerce.number().nonnegative().nullable().optional(),
 });
 
+/**
+ * Kullanıcı kalıcı silme (N-7 takip talebi: admin panelinde eksik olan
+ * kullanıcı silme/mağaza silme işlemleri). `users` tablosuna hiçbir tablo
+ * FK ile referans vermiyor (schema.ts'te doğrulandı) — bu yüzden gerçek
+ * silme güvenli; kendini veya son ADMIN'i silme guard'ları route içinde.
+ */
+export const userDeleteSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+/**
+ * Mağaza kalıcı silme. `orders.buyerStore`, `routine_completions.storeCode`
+ * ve `store_assets.storeCode` bu mağazaya FK ile bağlı olabilir — gerçek
+ * sipariş/rutin/varlık geçmişi olan bir mağaza asla kalıcı silinmez (route
+ * içinde count kontrolü yapılır), yalnız geçmişi olmayan (yanlışlıkla
+ * oluşturulmuş) mağazalar. Geçmişi olan mağazalar için doğru işlem zaten
+ * var olan AKTİF/PASİF durum değişimidir (bkz. storeUpdateSchema.status).
+ */
+export const storeDeleteSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
 export const orderApprovalDecisionSchema = z.object({
   decision: z.enum(["APPROVED", "REJECTED"]),
 });

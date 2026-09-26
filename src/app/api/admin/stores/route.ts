@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { stores, auditLogs, orders } from "@/db/schema";
+import { stores, auditLogs, orders, routineCompletions, storeAssets, pshBatches, scrapeJobs, users } from "@/db/schema";
 import { requireUser, requireRole, isDenied } from "@/lib/guards";
-import { parseBody, storeCreateSchema, storeUpdateSchema } from "@/lib/validation";
+import { parseBody, storeCreateSchema, storeUpdateSchema, storeDeleteSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { maskCreditCard, maskEmail } from "@/lib/privacy";
 import { eq, count, sum } from "drizzle-orm";
@@ -200,6 +200,86 @@ export async function PATCH(req: Request) {
     return NextResponse.json({
       message: "Mağaza güncellendi",
       store: updated,
+    });
+  } catch (error: unknown) {
+    return handleRouteError("admin/stores", error);
+  }
+}
+
+/**
+ * Mağaza kalıcı silme (admin panelinde eksik olan işlem, kullanıcı talebi
+ * üzerine eklendi). Gerçek sipariş/rutin/varlık geçmişi olan bir mağaza
+ * ASLA kalıcı silinmez — dürüstlük ilkesiyle aynı mantık: gerçek finansal
+ * geçmişi yok saymak/kaybetmek olmaz. Böyle bir mağaza için doğru işlem
+ * zaten var olan AKTİF/PASİF durum değişimidir (PATCH .status). Kalıcı
+ * silme yalnızca hiç sipariş/rutin/varlık kaydı olmayan (yanlışlıkla
+ * oluşturulmuş veya hiç kullanılmamış) mağazalar için izinlidir; bu yüzden
+ * yalnız ADMIN (PATCH'teki ADMIN+MANAGER'dan daha dar kapsam).
+ */
+export async function DELETE(req: Request) {
+  try {
+    const gate = await requireRole("ADMIN");
+    if (isDenied(gate)) return gate.response;
+    const currentUser = gate.user;
+
+    const parsed = await parseBody(req, storeDeleteSchema);
+    if ("response" in parsed) return parsed.response;
+    const { id } = parsed.data;
+
+    const [target] = await db.select().from(stores).where(eq(stores.id, id)).limit(1);
+    if (!target) {
+      return NextResponse.json({ error: "Mağaza bulunamadı" }, { status: 404 });
+    }
+
+    const [[orderRow], [routineRow], [assetRow], [batchRow], [scrapeRow], [userRow]] = await Promise.all([
+      db.select({ n: count() }).from(orders).where(eq(orders.buyerStore, target.storeCode)),
+      db
+        .select({ n: count() })
+        .from(routineCompletions)
+        .where(eq(routineCompletions.storeCode, target.storeCode)),
+      db.select({ n: count() }).from(storeAssets).where(eq(storeAssets.storeCode, target.storeCode)),
+      db.select({ n: count() }).from(pshBatches).where(eq(pshBatches.storeCode, target.storeCode)),
+      db.select({ n: count() }).from(scrapeJobs).where(eq(scrapeJobs.storeCode, target.storeCode)),
+      db.select({ n: count() }).from(users).where(eq(users.storeCode, target.storeCode)),
+    ]);
+    const orderCount = Number(orderRow?.n || 0);
+    const routineCount = Number(routineRow?.n || 0);
+    const assetCount = Number(assetRow?.n || 0);
+    const batchCount = Number(batchRow?.n || 0);
+    const scrapeCount = Number(scrapeRow?.n || 0);
+    const userCount = Number(userRow?.n || 0);
+
+    if (orderCount > 0 || routineCount > 0 || assetCount > 0 || batchCount > 0 || scrapeCount > 0) {
+      return NextResponse.json(
+        {
+          error: `${target.storeCode} mağazasının gerçek geçmişi var (${orderCount} sipariş, ${routineCount} rutin kaydı, ${assetCount} varlık, ${batchCount} PSH batch, ${scrapeCount} tarama işi) — kalıcı silinemez. Bunun yerine mağazayı PASİF yapın.`,
+        },
+        { status: 409 }
+      );
+    }
+    if (userCount > 0) {
+      return NextResponse.json(
+        {
+          error: `${target.storeCode} mağazasına ${userCount} kullanıcı atanmış — önce o kullanıcıları başka bir mağazaya atayın ya da silin, sonra tekrar deneyin.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    await db.insert(auditLogs).values({
+      actorName: currentUser.name,
+      storeCode: target.storeCode,
+      actionType: "STORE_DELETED",
+      targetEntity: `${target.storeCode} - ${target.storeName}`,
+      beforeState: target.status,
+      afterState: "SİLİNDİ",
+      details: "Geçmişi olmayan mağaza kalıcı olarak silindi.",
+    });
+
+    await db.delete(stores).where(eq(stores.id, id));
+
+    return NextResponse.json({
+      message: `${target.storeCode} mağazası kalıcı olarak silindi.`,
     });
   } catch (error: unknown) {
     return handleRouteError("admin/stores", error);

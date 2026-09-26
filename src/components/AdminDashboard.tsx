@@ -221,6 +221,32 @@ export function AdminDashboard({
     }
   };
 
+  const handleDeleteStore = async (store: any) => {
+    if (
+      !window.confirm(
+        `${store.storeCode} (${store.storeName}) kalıcı olarak silinecek. Bu işlem yalnızca hiç sipariş/rutin/varlık geçmişi yoksa yapılabilir ve geri alınamaz. Devam edilsin mi?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/stores", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: store.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setStores((prev) => prev.filter((s) => s.id !== store.id));
+        showFeedback(data.message || "Mağaza silindi.");
+      } else {
+        showFeedback(data.error || "Mağaza silinemedi", "error");
+      }
+    } catch {
+      showFeedback("Silme başarısız oldu", "error");
+    }
+  };
+
   const handleUpdateThreshold = async (store: any) => {
     const trimmed = thresholdDraft.trim();
     const nextThreshold = trimmed === "" ? null : Number(trimmed);
@@ -291,6 +317,32 @@ export function AdminDashboard({
       showFeedback(err.message, "error");
     } finally {
       setSavingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async (u: any) => {
+    if (
+      !window.confirm(
+        `${u.name} (${u.email}) kalıcı olarak silinecek. Bu işlem geri alınamaz. Devam edilsin mi?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: u.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUsers((prev) => prev.filter((x) => x.id !== u.id));
+        showFeedback(data.message || "Kullanıcı silindi.");
+      } else {
+        showFeedback(data.error || "Kullanıcı silinemedi", "error");
+      }
+    } catch {
+      showFeedback("Silme başarısız oldu", "error");
     }
   };
 
@@ -592,16 +644,29 @@ export function AdminDashboard({
                           {st.marketplace}
                         </span>
                       </div>
-                      <button
-                        onClick={() => handleToggleStoreStatus(st)}
-                        className={`px-2.5 py-0.5 rounded text-[10px] font-mono-tech font-bold transition ${
-                          isActive
-                            ? "bg-positive/15 text-positive border border-positive/30 hover:bg-positive/25"
-                            : "bg-surface-3 text-ink-faint hover:text-ink-muted"
-                        }`}
-                      >
-                        {isActive ? "AKTİF" : "PASİF"}
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleToggleStoreStatus(st)}
+                          className={`px-2.5 py-0.5 rounded text-[10px] font-mono-tech font-bold transition ${
+                            isActive
+                              ? "bg-positive/15 text-positive border border-positive/30 hover:bg-positive/25"
+                              : "bg-surface-3 text-ink-faint hover:text-ink-muted"
+                          }`}
+                        >
+                          {isActive ? "AKTİF" : "PASİF"}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteStore(st)}
+                          title={
+                            Number(st.totalOrdersCount) > 0
+                              ? "Bu mağazanın sipariş geçmişi var — kalıcı silinemez, yalnız PASİF yapılabilir"
+                              : "Kalıcı olarak sil (geri alınamaz)"
+                          }
+                          className="p-1.5 rounded-lg bg-danger/15 hover:bg-rose-500 text-danger hover:text-ink transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <h4 className="text-base font-bold text-ink mb-1">{st.storeName}</h4>
@@ -715,6 +780,7 @@ export function AdminDashboard({
                   <th className="p-3.5">Yetki Seviyesi</th>
                   <th className="p-3.5">Atanmış Mağaza (İzolasyon)</th>
                   <th className="p-3.5 text-right">İşlem / Mağaza Değiştir</th>
+                  <th className="p-3.5 text-right">Sil</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -760,6 +826,19 @@ export function AdminDashboard({
                           </select>
                         ) : (
                           <span className="text-ink-faint text-[11px]">Süper Yetkili</span>
+                        )}
+                      </td>
+                      <td className="p-3.5 text-right">
+                        {u.id === currentUser.id ? (
+                          <span className="text-ink-faint text-[11px]">Siz</span>
+                        ) : (
+                          <button
+                            onClick={() => handleDeleteUser(u)}
+                            title="Kalıcı olarak sil (geri alınamaz)"
+                            className="p-1.5 rounded-lg bg-danger/15 hover:bg-rose-500 text-danger hover:text-ink transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </td>
                     </tr>

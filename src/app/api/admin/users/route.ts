@@ -3,9 +3,9 @@ import { db } from "@/db";
 import { users, stores, auditLogs } from "@/db/schema";
 import { requireRole, isDenied } from "@/lib/guards";
 import { hashPassword } from "@/lib/passwords";
-import { parseBody, userCreateSchema, userUpdateSchema } from "@/lib/validation";
+import { parseBody, userCreateSchema, userUpdateSchema, userDeleteSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, count } from "drizzle-orm";
 
 export async function GET() {
   try {
@@ -196,6 +196,73 @@ export async function PATCH(req: Request) {
         role: updated.role,
         storeCode: updated.storeCode,
       },
+    });
+  } catch (error: unknown) {
+    return handleRouteError("admin/users", error);
+  }
+}
+
+/**
+ * Kullanıcı kalıcı silme (admin panelinde eksik olan işlem, kullanıcı
+ * talebi üzerine eklendi). `users` tablosuna hiçbir tablo FK ile referans
+ * vermiyor (orders/audit_logs vb. yalnız isim/e-posta metnini kopyalar) —
+ * bu yüzden gerçek silme diğer kayıtları etkilemez, güvenlidir.
+ *
+ * İki kilit guard: (1) aktif oturumdaki yönetici kendini silemez — bu,
+ * yanlışlıkla erişimini kaybetmesini engeller; (2) sistemde tek bir ADMIN
+ * kaldıysa o silinemez — aksi halde kimse admin paneline giremez hale
+ * gelirdi. Silmeden önce denetim izine (auditLogs) tam anlık görüntü
+ * yazılır, çünkü silme sonrası satır geri getirilemez.
+ */
+export async function DELETE(req: Request) {
+  try {
+    const gate = await requireRole("ADMIN");
+    if (isDenied(gate)) return gate.response;
+    const currentUser = gate.user;
+
+    const parsed = await parseBody(req, userDeleteSchema);
+    if ("response" in parsed) return parsed.response;
+    const { id } = parsed.data;
+
+    const [target] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    if (!target) {
+      return NextResponse.json({ error: "Kullanıcı bulunamadı" }, { status: 404 });
+    }
+
+    if (target.id === currentUser.id) {
+      return NextResponse.json(
+        { error: "Aktif oturumdaki yönetici kendi hesabını silemez." },
+        { status: 409 }
+      );
+    }
+
+    if (target.role === "ADMIN") {
+      const [{ adminCount }] = await db
+        .select({ adminCount: count() })
+        .from(users)
+        .where(eq(users.role, "ADMIN"));
+      if (Number(adminCount) <= 1) {
+        return NextResponse.json(
+          { error: "Sistemdeki son ADMIN hesabı silinemez — önce başka bir ADMIN tanımlayın." },
+          { status: 409 }
+        );
+      }
+    }
+
+    await db.insert(auditLogs).values({
+      actorName: currentUser.name,
+      storeCode: target.storeCode || "ALL",
+      actionType: "USER_DELETED",
+      targetEntity: `${target.name} (${target.email})`,
+      beforeState: `${target.role} - ${target.storeCode}`,
+      afterState: "SİLİNDİ",
+      details: `Kullanıcı kalıcı olarak silindi.`,
+    });
+
+    await db.delete(users).where(eq(users.id, id));
+
+    return NextResponse.json({
+      message: `${target.name} kalıcı olarak silindi.`,
     });
   } catch (error: unknown) {
     return handleRouteError("admin/users", error);
