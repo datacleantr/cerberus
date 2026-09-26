@@ -570,6 +570,45 @@ export function AdminDashboard({
     }
   };
 
+  // Backend (PATCH /api/admin/users) rol değişikliğini zaten destekliyordu
+  // ama admin panelinde bunu tetikleyecek hiçbir kontrol yoktu — bir ADMIN
+  // bir STORE_USER'ı MANAGER'a terfi ettiremiyor ya da tersini yapamıyordu.
+  // Rol değişimi hassas bir yetki değişikliği olduğu için onay istenir;
+  // kendi rolünü değiştirme zaten backend'de 409 ile engelleniyor (bkz.
+  // route.ts), UI'da da kendi satırında kontrol gösterilmez.
+  const handleUpdateUserRole = async (u: { id: number; name: string; role: string }, newRole: string) => {
+    if (newRole === u.role) return;
+    if (
+      !window.confirm(
+        `${u.name} kullanıcısının yetkisi "${u.role}" → "${newRole}" olarak değiştirilecek. Devam edilsin mi?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: u.id, role: newRole }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUsers((prev) =>
+          prev.map((x) =>
+            x.id === u.id
+              ? { ...x, role: newRole, storeCode: newRole === "ADMIN" ? "ALL" : x.storeCode }
+              : x
+          )
+        );
+        showFeedback(data.message || "Kullanıcı yetkisi güncellendi.");
+      } else {
+        showFeedback(data.error || "Yetki güncellenemedi", "error");
+      }
+    } catch {
+      showFeedback("Güncelleme başarısız", "error");
+    }
+  };
+
   // Delete a specific row from orders table
   const handleDeleteOrderRow = async (orderId: number) => {
     try {
@@ -1022,15 +1061,31 @@ export function AdminDashboard({
                       </td>
                       <td className="p-3.5 text-ink-muted">{u.email}</td>
                       <td className="p-3.5">
-                        <span
-                          className={`px-2.5 py-0.5 rounded text-[10px] font-bold border ${
-                            isAdmin
-                              ? "bg-brand/15 text-brand-soft border-brand/40"
-                              : "bg-positive/15 text-positive border-positive/40"
-                          }`}
-                        >
-                          {u.role}
-                        </span>
+                        {u.id === currentUser.id ? (
+                          <span
+                            className={`px-2.5 py-0.5 rounded text-[10px] font-bold border ${
+                              isAdmin
+                                ? "bg-brand/15 text-brand-soft border-brand/40"
+                                : "bg-positive/15 text-positive border-positive/40"
+                            }`}
+                          >
+                            {u.role}
+                          </span>
+                        ) : (
+                          <select
+                            value={u.role}
+                            onChange={(e) => handleUpdateUserRole(u, e.target.value)}
+                            className={`px-2.5 py-1 rounded text-[10px] font-bold border bg-surface-base focus:outline-none ${
+                              isAdmin
+                                ? "text-brand-soft border-brand/40"
+                                : "text-positive border-positive/40"
+                            }`}
+                          >
+                            <option value="ADMIN">ADMIN</option>
+                            <option value="MANAGER">MANAGER</option>
+                            <option value="STORE_USER">STORE_USER</option>
+                          </select>
+                        )}
                       </td>
                       <td className="p-3.5">
                         <span className="font-bold text-ink px-2.5 py-1 rounded-lg bg-surface-2 border border-line">
