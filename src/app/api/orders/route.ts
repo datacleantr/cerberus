@@ -104,7 +104,7 @@ export async function GET(req: Request) {
     const kpiQuery =
       conditions.length > 0 ? kpiBase.where(and(...conditions)) : kpiBase;
 
-    const [[kpi], allStores, allBatches, allAuditLogs, allUsers] = await Promise.all([
+    const [[kpi], allStores, allBatches, allUsers] = await Promise.all([
       kpiQuery,
       currentUser.role === "STORE_USER" && effectiveStore !== "ALL"
         ? db.select().from(stores).where(eq(stores.storeCode, effectiveStore)).orderBy(stores.storeCode)
@@ -112,11 +112,6 @@ export async function GET(req: Request) {
       effectiveStore && effectiveStore !== "ALL"
         ? db.select().from(pshBatches).where(eq(pshBatches.storeCode, effectiveStore)).orderBy(desc(pshBatches.createdAt))
         : db.select().from(pshBatches).orderBy(desc(pshBatches.createdAt)),
-      currentUser.role === "STORE_USER"
-        ? Promise.resolve([])
-        : effectiveStore !== "ALL"
-          ? db.select().from(auditLogs).where(eq(auditLogs.storeCode, effectiveStore)).orderBy(desc(auditLogs.createdAt)).limit(40)
-          : db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(40),
       // Kullanıcı dizini sipariş ekranının ihtiyacı değildir; yalnız ADMIN'e
       // güvenli alanlarla döner. Mağaza kullanıcılarına personel envanteri sızmaz.
       currentUser.role === "ADMIN"
@@ -154,7 +149,12 @@ export async function GET(req: Request) {
       orders: allOrders.map((o) => maskOrderForRole(o, currentUser)),
       stores: allStores,
       batches: allBatches,
-      auditLogs: allAuditLogs,
+      // Denetim izi artık burada dönmüyor (bkz. GET /api/admin/audit-logs).
+      // Eskiden bu uçtan gelen 40 kayıtlık, siparişler sekmesinin mağaza
+      // filtresine bağımlı liste, admin panelindeki "Denetim İzi" sekmesinin
+      // aslında GLOBAL değil filtrelenmiş bir görünüm göstermesine yol
+      // açıyordu — sekme başlığı bunu hiç belirtmiyordu. Şimdi kendi
+      // sayfalanan, filtrelenmeyen ucu var.
       users: minimizeUsersForRole(allUsers, currentUser),
       // Anonim fallback kaldırıldı: oturum bu noktada garanti edilir (F-02/F-05)
       currentUser,

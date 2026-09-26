@@ -46,8 +46,18 @@ export function AdminDashboard({
   const [stores, setStores] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Denetim izi (AUDIT) sekmesi — kendi bağımsız, sayfalanan/filtrelenen
+  // ucundan (GET /api/admin/audit-logs) beslenir; artık ORDERS_CRUD
+  // sekmesinin mağaza filtresine bağımlı değil (bkz. fetchAuditLogs).
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditStoreFilter, setAuditStoreFilter] = useState("ALL");
+  const [auditActionFilter, setAuditActionFilter] = useState("ALL");
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageCount, setAuditPageCount] = useState(1);
+  const [auditTotal, setAuditTotal] = useState(0);
 
   // Filter for orders subtab
   const [orderStoreFilter, setOrderStoreFilter] = useState("ALL");
@@ -81,6 +91,14 @@ export function AdminDashboard({
   const [newUserStore, setNewUserStore] = useState("HRN");
   const [newUserPass, setNewUserPass] = useState("");
   const [savingUser, setSavingUser] = useState(false);
+
+  // Parola sıfırlama (admin panelinde eksikti — PATCH /api/admin/users
+  // zaten opsiyonel `password` alanını destekliyordu, ama hiçbir UI onu
+  // kullanmıyordu; bir kullanıcı parolasını unuttuğunda admin panelden
+  // sıfırlama yolu yoktu).
+  const [resetPasswordFor, setResetPasswordFor] = useState<number | null>(null);
+  const [resetPasswordDraft, setResetPasswordDraft] = useState("");
+  const [savingPasswordReset, setSavingPasswordReset] = useState(false);
 
   // Database Reset confirmation state
   const [confirmationInput, setConfirmationInput] = useState("");
@@ -135,7 +153,6 @@ export function AdminDashboard({
         throw new Error(data.error || "Sipariş sayfası yüklenemedi.");
       }
       setOrders(data.orders || []);
-      setAuditLogs(data.auditLogs || []);
       const nextPageCount = Math.max(1, Number(data.pagination?.pageCount || 1));
       setOrderTotal(Number(data.pagination?.total || 0));
       setOrderPageCount(nextPageCount);
@@ -150,6 +167,38 @@ export function AdminDashboard({
     }
   }, [deferredOrderSearch, orderPage, orderStoreFilter]);
 
+  // Denetim izi kendi bağımsız, sayfalanan ucundan beslenir (GET
+  // /api/admin/audit-logs) — artık ORDERS_CRUD sekmesinin mağaza filtresine
+  // bağımlı, 40 kayıtla sınırlı eski davranış yok.
+  const fetchAuditLogs = useCallback(async () => {
+    setAuditLoading(true);
+    try {
+      const params = new URLSearchParams({
+        storeCode: auditStoreFilter,
+        actionType: auditActionFilter,
+        page: String(auditPage),
+        pageSize: "50",
+      });
+      const response = await fetch(`/api/admin/audit-logs?${params.toString()}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Denetim izi yüklenemedi.");
+      }
+      setAuditLogs(data.auditLogs || []);
+      const nextPageCount = Math.max(1, Number(data.pagination?.pageCount || 1));
+      setAuditTotal(Number(data.pagination?.total || 0));
+      setAuditPageCount(nextPageCount);
+      if (auditPage > nextPageCount) setAuditPage(nextPageCount);
+    } catch (error) {
+      setFeedbackMsg({
+        type: "error",
+        text: error instanceof Error ? error.message : "Denetim izi yüklenemedi.",
+      });
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [auditActionFilter, auditPage, auditStoreFilter]);
+
   useEffect(() => {
     // Effect gövdesinde senkron setState yapılmaz; yükleme async akışta yönetilir.
     void fetchAdminData();
@@ -158,6 +207,12 @@ export function AdminDashboard({
   useEffect(() => {
     void fetchOrderPage();
   }, [fetchOrderPage]);
+
+  useEffect(() => {
+    if (activeSubTab === "AUDIT") {
+      void fetchAuditLogs();
+    }
+  }, [activeSubTab, fetchAuditLogs]);
 
   const handleCreateStore = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -343,6 +398,34 @@ export function AdminDashboard({
       }
     } catch {
       showFeedback("Silme başarısız oldu", "error");
+    }
+  };
+
+  const handleResetPassword = async (u: any) => {
+    const trimmed = resetPasswordDraft.trim();
+    if (trimmed.length < 12) {
+      showFeedback("Yeni parola en az 12 karakter olmalıdır.", "error");
+      return;
+    }
+    setSavingPasswordReset(true);
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: u.id, password: trimmed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFeedback(`${u.name} için yeni parola kaydedildi.`);
+        setResetPasswordFor(null);
+        setResetPasswordDraft("");
+      } else {
+        showFeedback(data.error || "Parola sıfırlanamadı", "error");
+      }
+    } catch {
+      showFeedback("Parola sıfırlama başarısız oldu", "error");
+    } finally {
+      setSavingPasswordReset(false);
     }
   };
 
@@ -780,6 +863,7 @@ export function AdminDashboard({
                   <th className="p-3.5">Yetki Seviyesi</th>
                   <th className="p-3.5">Atanmış Mağaza (İzolasyon)</th>
                   <th className="p-3.5 text-right">İşlem / Mağaza Değiştir</th>
+                  <th className="p-3.5 text-right">Parola</th>
                   <th className="p-3.5 text-right">Sil</th>
                 </tr>
               </thead>
@@ -826,6 +910,48 @@ export function AdminDashboard({
                           </select>
                         ) : (
                           <span className="text-ink-faint text-[11px]">Süper Yetkili</span>
+                        )}
+                      </td>
+                      <td className="p-3.5 text-right">
+                        {resetPasswordFor === u.id ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <input
+                              type="password"
+                              autoFocus
+                              minLength={12}
+                              placeholder="Yeni parola (min 12)"
+                              value={resetPasswordDraft}
+                              onChange={(e) => setResetPasswordDraft(e.target.value)}
+                              className="w-40 px-2 py-1 bg-surface-base border border-line rounded-lg text-ink"
+                            />
+                            <button
+                              onClick={() => handleResetPassword(u)}
+                              disabled={savingPasswordReset}
+                              className="px-2 py-1 rounded-lg bg-brand text-ink font-bold hover:bg-brand-soft disabled:opacity-50"
+                            >
+                              Kaydet
+                            </button>
+                            <button
+                              onClick={() => {
+                                setResetPasswordFor(null);
+                                setResetPasswordDraft("");
+                              }}
+                              className="px-2 py-1 rounded-lg text-ink-faint hover:text-ink"
+                            >
+                              Vazgeç
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setResetPasswordFor(u.id);
+                              setResetPasswordDraft("");
+                            }}
+                            title="Parolayı sıfırla"
+                            className="p-1.5 rounded-lg bg-surface-2 border border-line text-ink-muted hover:text-brand-soft hover:border-brand/50 transition"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </td>
                       <td className="p-3.5 text-right">
@@ -1089,11 +1215,48 @@ export function AdminDashboard({
       {/* ========================================================================= */}
       {activeSubTab === "AUDIT" && (
         <div className="space-y-4">
-          <h3 className="text-sm font-bold text-ink uppercase font-mono-tech">
-            Gerçek Zamanlı Sistem Değişiklik Günlüğü (Audit Trail)
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-bold text-ink uppercase font-mono-tech">
+              Gerçek Zamanlı Sistem Değişiklik Günlüğü (Audit Trail) — {auditTotal} Kayıt
+            </h3>
+            <div className="flex items-center gap-2 font-mono-tech text-xs">
+              <select
+                value={auditStoreFilter}
+                onChange={(e) => {
+                  setAuditPage(1);
+                  setAuditStoreFilter(e.target.value);
+                }}
+                className="px-3 py-1.5 bg-surface-base border border-line rounded-xl text-ink"
+              >
+                <option value="ALL">Tüm Mağazalar</option>
+                {stores.map((s) => (
+                  <option key={s.storeCode} value={s.storeCode}>
+                    {s.storeCode}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={auditActionFilter}
+                onChange={(e) => {
+                  setAuditPage(1);
+                  setAuditActionFilter(e.target.value);
+                }}
+                className="px-3 py-1.5 bg-surface-base border border-line rounded-xl text-ink"
+              >
+                <option value="ALL">Tüm İşlem Türleri</option>
+                {Array.from(new Set(auditLogs.map((l) => l.actionType))).map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="bg-surface-1 border border-line rounded-2xl p-4 max-h-[500px] overflow-y-auto space-y-2.5">
-            {auditLogs.length === 0 ? (
+            {auditLoading ? (
+              <p className="text-xs font-mono-tech text-ink-faint">Yükleniyor…</p>
+            ) : auditLogs.length === 0 ? (
               <p className="text-xs font-mono-tech text-ink-faint">Henüz denetim kaydı bulunmuyor.</p>
             ) : (
               auditLogs.map((log) => (
@@ -1114,12 +1277,34 @@ export function AdminDashboard({
                     {log.details && <p className="text-[11px] text-ink-muted">{log.details}</p>}
                   </div>
                   <div className="text-right text-[11px] text-ink-faint shrink-0">
-                    {new Date(log.createdAt).toLocaleTimeString()} • Mağaza: {log.storeCode}
+                    {new Date(log.createdAt).toLocaleString()} • Mağaza: {log.storeCode}
                   </div>
                 </div>
               ))
             )}
           </div>
+
+          {auditPageCount > 1 && (
+            <div className="flex items-center justify-center gap-3 font-mono-tech text-xs">
+              <button
+                disabled={auditPage <= 1}
+                onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
+                className="px-3 py-1.5 rounded-lg bg-surface-2 border border-line text-ink disabled:opacity-40"
+              >
+                ← Önceki
+              </button>
+              <span className="text-ink-muted">
+                Sayfa {auditPage} / {auditPageCount}
+              </span>
+              <button
+                disabled={auditPage >= auditPageCount}
+                onClick={() => setAuditPage((p) => Math.min(auditPageCount, p + 1))}
+                className="px-3 py-1.5 rounded-lg bg-surface-2 border border-line text-ink disabled:opacity-40"
+              >
+                Sonraki →
+              </button>
+            </div>
+          )}
         </div>
       )}
 
