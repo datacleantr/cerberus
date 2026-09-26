@@ -79,6 +79,19 @@ export function AdminDashboard({
   const [storeNotes, setStoreNotes] = useState("");
   const [purchaseApprovalThreshold, setPurchaseApprovalThreshold] = useState("");
   const [savingStore, setSavingStore] = useState(false);
+
+  // Mağaza detaylarını düzenleme (admin panelinde eksikti — PATCH
+  // /api/admin/stores zaten storeName/buyerName/defaultCard/defaultEmail/
+  // notes alanlarını destekliyordu, ama tek düzenlenebilir alan satın alma
+  // eşiğiydi; bir mağaza adında yazım hatası ya da alıcı değişikliği
+  // olduğunda admin panelden düzeltme yolu yoktu).
+  const [editingStore, setEditingStore] = useState<any | null>(null);
+  const [editStoreName, setEditStoreName] = useState("");
+  const [editBuyerName, setEditBuyerName] = useState("");
+  const [editDefaultCard, setEditDefaultCard] = useState("");
+  const [editDefaultEmail, setEditDefaultEmail] = useState("");
+  const [editStoreNotes, setEditStoreNotes] = useState("");
+  const [savingStoreEdit, setSavingStoreEdit] = useState(false);
   const [editingThresholdFor, setEditingThresholdFor] = useState<number | null>(null);
   const [thresholdDraft, setThresholdDraft] = useState("");
   const [savingThreshold, setSavingThreshold] = useState(false);
@@ -273,6 +286,49 @@ export function AdminDashboard({
       }
     } catch {
       showFeedback("Durum güncellenemedi", "error");
+    }
+  };
+
+  const handleOpenStoreEdit = (store: any) => {
+    setEditingStore(store);
+    setEditStoreName(store.storeName || "");
+    setEditBuyerName(store.buyerName || "");
+    setEditDefaultCard(currentUser.role === "ADMIN" ? store.defaultCard || "" : "");
+    setEditDefaultEmail(currentUser.role === "ADMIN" ? store.defaultEmail || "" : "");
+    setEditStoreNotes(store.notes || "");
+  };
+
+  const handleSaveStoreEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStore) return;
+    setSavingStoreEdit(true);
+    try {
+      const res = await fetch("/api/admin/stores", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingStore.id,
+          storeName: editStoreName,
+          buyerName: editBuyerName,
+          notes: editStoreNotes,
+          ...(currentUser.role === "ADMIN"
+            ? { defaultCard: editDefaultCard, defaultEmail: editDefaultEmail }
+            : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        showFeedback(data.message || "Mağaza güncellendi.");
+        setEditingStore(null);
+        fetchAdminData();
+        if (onDataRefresh) onDataRefresh();
+      } else {
+        showFeedback(data.error || "Mağaza güncellenemedi", "error");
+      }
+    } catch {
+      showFeedback("Güncelleme başarısız oldu", "error");
+    } finally {
+      setSavingStoreEdit(false);
     }
   };
 
@@ -821,14 +877,22 @@ export function AdminDashboard({
                     <span className="text-ink-faint text-[11px]">
                       Kart: {st.defaultCard || "Tanımlı değil"}
                     </span>
-                    {onStoreSelected && (
+                    <div className="flex items-center gap-3">
                       <button
-                        onClick={() => onStoreSelected(st.storeCode)}
-                        className="text-brand-soft hover:underline font-bold text-xs flex items-center gap-1"
+                        onClick={() => handleOpenStoreEdit(st)}
+                        className="text-ink-muted hover:text-brand-soft font-bold text-xs"
                       >
-                        Siparişleri İncele →
+                        Detayları Düzenle
                       </button>
-                    )}
+                      {onStoreSelected && (
+                        <button
+                          onClick={() => onStoreSelected(st.storeCode)}
+                          className="text-brand-soft hover:underline font-bold text-xs flex items-center gap-1"
+                        >
+                          Siparişleri İncele →
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -1571,6 +1635,107 @@ export function AdminDashboard({
                   className="px-5 py-2 bg-brand hover:bg-brand-soft text-ink rounded-xl font-bold uppercase transition"
                 >
                   {savingStore ? "Kaydediliyor..." : "Mağazayı Oluştur"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: MAĞAZA DETAYLARINI DÜZENLE                                         */}
+      {/* ========================================================================= */}
+      {editingStore && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-surface-1 border border-line rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-line">
+              <div className="flex items-center gap-2">
+                <Store className="w-5 h-5 text-brand-soft" />
+                <h3 className="text-base font-bold text-ink">
+                  {editingStore.storeCode} — Detayları Düzenle
+                </h3>
+              </div>
+              <button onClick={() => setEditingStore(null)}>
+                <XCircle className="w-5 h-5 text-ink-muted hover:text-ink" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveStoreEdit} className="space-y-3.5 text-xs font-mono-tech">
+              <div>
+                <label className="block text-ink-muted mb-1">Mağaza Resmi Adı</label>
+                <input
+                  type="text"
+                  required
+                  value={editStoreName}
+                  onChange={(e) => setEditStoreName(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-ink-muted mb-1">Alıcı Sorumlusu (Buyer)</label>
+                  <input
+                    type="text"
+                    value={editBuyerName}
+                    onChange={(e) => setEditBuyerName(e.target.value)}
+                    className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                  />
+                </div>
+                {currentUser.role === "ADMIN" && (
+                  <div>
+                    <label className="block text-ink-muted mb-1">Ödeme Kartı Son 4</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="\d{4}"
+                      maxLength={4}
+                      placeholder="İsteğe bağlı"
+                      value={editDefaultCard}
+                      onChange={(e) => setEditDefaultCard(e.target.value.replace(/\D/g, ""))}
+                      className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink font-bold"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {currentUser.role === "ADMIN" && (
+                <div>
+                  <label className="block text-ink-muted mb-1">Mağaza Sipariş E-posta Adresi</label>
+                  <input
+                    type="email"
+                    placeholder="İsteğe bağlı"
+                    value={editDefaultEmail}
+                    onChange={(e) => setEditDefaultEmail(e.target.value)}
+                    className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-ink-muted mb-1">Notlar</label>
+                <textarea
+                  rows={3}
+                  value={editStoreNotes}
+                  onChange={(e) => setEditStoreNotes(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-base border border-line rounded-xl text-ink"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-line">
+                <button
+                  type="button"
+                  onClick={() => setEditingStore(null)}
+                  className="px-4 py-2 rounded-xl text-ink-muted hover:text-ink"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingStoreEdit}
+                  className="px-5 py-2 bg-brand hover:bg-brand-soft text-ink rounded-xl font-bold uppercase transition"
+                >
+                  {savingStoreEdit ? "Kaydediliyor..." : "Değişiklikleri Kaydet"}
                 </button>
               </div>
             </form>
