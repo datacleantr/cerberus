@@ -4,7 +4,6 @@ import { requireUser, isDenied, resolveStoreScope } from "@/lib/guards";
 import { parseBody, driveUrlSchema } from "@/lib/validation";
 import { handleRouteError } from "@/lib/apiResponse";
 import { readResponseBytesWithLimit } from "@/lib/httpSafety";
-import { parseXlsMatrix } from "@/lib/xlsRowMapping";
 
 function extractSpreadsheetId(url: string): string | null {
   const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -93,18 +92,23 @@ export async function POST(req: Request) {
       );
     }
 
-    // First row is headers
+    // First row is headers.
+    //
+    // ÖNEMLİ: Bu uç artık satırları KENDİSİ eşlemez (eskiden parseXlsMatrix
+    // ile pozisyonel/kilitli 40-kolon varsayımıyla eşlerdi). Ham matrisi
+    // (başlık + veri satırları) olduğu gibi döner; kolon eşleme kararı
+    // (otomatik tahmin + kullanıcı onayı/düzeltmesi) istemcide, dosya
+    // yükleme ve yapıştırma yollarıyla AYNI tek motorla (xlsRowMapping.ts)
+    // yapılır — üç girdi yolunun (dosya/Drive/yapıştır) farklı eşleme
+    // mantığına sahip olması, kolon eşleme UI'sı yalnızca birinde çalışıp
+    // diğerinde çalışmaması gibi bir tutarsızlığa yol açardı.
     const headers = rawMatrix[0].map((h: any) => String(h || "").trim());
-    const parsedRows = parseXlsMatrix(rawMatrix, {
-      defaultStore,
-      defaultProductTitle: "Google Drive Ürünü",
-      defaultDriveLink: driveUrl,
-    });
+    const dataRowCount = rawMatrix.length - 1;
 
     return NextResponse.json({
-      message: `Google Drive tablosundan (${firstSheetName}) ${parsedRows.length} adet sipariş ayrıştırıldı.`,
+      message: `Google Drive tablosundan (${firstSheetName}) ${dataRowCount} satır okundu.`,
       headers,
-      rows: parsedRows,
+      rawMatrix,
     });
   } catch (error: unknown) {
     return handleRouteError("POST /api/orders/import-drive-url", error);

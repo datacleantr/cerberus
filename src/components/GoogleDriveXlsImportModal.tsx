@@ -13,8 +13,59 @@ import {
   ClipboardPaste,
   Trash2,
   Edit3,
+  Columns3,
+  Info,
 } from "lucide-react";
-import { parseXlsMatrix } from "@/lib/xlsRowMapping";
+import {
+  guessColumnMapping,
+  buildRowsFromMapping,
+  type ColumnMapping,
+  type XlsRowDefaults,
+} from "@/lib/xlsRowMapping";
+import {
+  IMPORT_FIELDS,
+  IMPORT_FIELD_TYPE_LABELS,
+  detectColumnSampleType,
+  isColumnTypeCompatible,
+  normalizeHeaderLabel,
+} from "@/lib/importFieldSchema";
+
+/**
+ * Kolon eşleme (column mapping) — kullanıcı isteği: farklı XLS/Drive
+ * kaynakları CERBERUS'un kilitli 40-kolon standardından farklı sırada/adda
+ * kolonlara sahip olabilir. Eskiden üç girdi yolu da (dosya/Drive/yapıştır)
+ * doğrudan pozisyonel `parseXlsMatrix`'i çağırıyordu — kolon sırası farklı
+ * bir dosya sessizce yanlış eşlenirdi. Artık ham matris önce bu eşleme
+ * adımından geçiyor: başlıklar otomatik tahmin edilir (bilinen alan
+ * adı/eşanlamlısıyla), kullanıcı onaylar/düzeltir, tip uyuşmazlıkları
+ * (ör. bir para alanına metin kolon eşlenmesi) inline uyarılır.
+ */
+const MAPPING_STORAGE_PREFIX = "cerberus:xlsColumnMapping:v1:";
+const IGNORE_FIELD = "__IGNORE__";
+
+function headerSignature(headers: string[]): string {
+  return headers.map((h) => normalizeHeaderLabel(h)).join("|");
+}
+
+function loadSavedMapping(headers: string[]): ColumnMapping | null {
+  try {
+    const raw = window.localStorage.getItem(MAPPING_STORAGE_PREFIX + headerSignature(headers));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as ColumnMapping) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveMapping(headers: string[], mapping: ColumnMapping) {
+  try {
+    window.localStorage.setItem(MAPPING_STORAGE_PREFIX + headerSignature(headers), JSON.stringify(mapping));
+  } catch {
+    // localStorage kullanılamıyorsa (gizli sekme vb.) sessizce yut — eşleme
+    // yine de bu oturum için çalışmaya devam eder, yalnız hatırlanmaz.
+  }
+}
 
 interface GoogleDriveXlsImportModalProps {
   isOpen: boolean;
@@ -46,6 +97,13 @@ export function GoogleDriveXlsImportModal({
   const [previewRows, setPreviewRows] = useState<any[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
 
+  // ── Kolon eşleme (column mapping) state'i ──
+  const [rawMatrix, setRawMatrix] = useState<any[][] | null>(null);
+  const [pendingDefaults, setPendingDefaults] = useState<XlsRowDefaults | null>(null);
+  const [columnMapping, setColumnMapping] = useState<ColumnMapping>({});
+  const [showMappingStep, setShowMappingStep] = useState(false);
+  const [mappingNotice, setMappingNotice] = useState<string | null>(null);
+
   // Submission state
   const [importing, setImporting] = useState(false);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
@@ -56,9 +114,78 @@ export function GoogleDriveXlsImportModal({
 
   if (!isOpen) return null;
 
-  // Convert raw 2D matrix array to 40-col objects (tek kaynak: src/lib/xlsRowMapping.ts)
-  const parseMatrixToRows = (rawMatrix: any[][]) =>
-    parseXlsMatrix(rawMatrix, { defaultStore: store, defaultProductTitle: "Excel Siparişi" });
+  const headerRow: string[] = rawMatrix ? rawMatrix[0].map((h) => String(h ?? "").trim()) : [];
+  const dataRows: any[][] = rawMatrix ? rawMatrix.slice(1) : [];
+
+  /**
+   * Ham matrisi (başlık + veri) alır. Daha önce bu tam başlık için
+   * kaydedilmiş bir eşleme varsa sessizce uygular (kullanıcı her seferinde
+   * aynı formatı yeniden eşlemesin diye); yoksa otomatik tahmin üretir ve
+   * kullanıcının onaylaması için eşleme adımını açar.
+   */
+  const beginMappingFlow = (matrix: any[][], defaults: XlsRowDefaults) => {
+    const headers = matrix[0].map((h: any) => String(h ?? "").trim());
+    setRawMatrix(matrix);
+    setPendingDefaults(defaults);
+    setMappingNotice(null);
+
+    const saved = loadSavedMapping(headers);
+    if (saved && Object.keys(saved).length > 0) {
+      const rows = buildRowsFromMapping(matrix, saved, defaults);
+      if (rows.length > 0) {
+        setColumnMapping(saved);
+        setPreviewRows(rows);
+        setShowMappingStep(false);
+        setMappingNotice(
+          `Bu dosya formatı için daha önce kaydettiğiniz kolon eşlemesi otomatik uygulandı (${Object.keys(saved).length} kolon). Değiştirmek isterseniz aşağıdan "Eşlemeyi Düzenle"ye tıklayın.`
+        );
+        return;
+      }
+    }
+    setColumnMapping(guessColumnMapping(headers));
+    setShowMappingStep(true);
+  };
+
+  const handleMappingChange = (colIndex: number, fieldKey: string) => {
+    setColumnMapping((prev) => {
+      const next = { ...prev };
+      // Aynı alanı başka bir kolona atamışsa oradan kaldır (bir alan yalnızca bir kolona bağlanabilir)
+      for (const key of Object.keys(next)) {
+        if (next[Number(key)] === fieldKey) delete next[Number(key)];
+      }
+      if (fieldKey === IGNORE_FIELD) {
+        delete next[colIndex];
+      } else {
+        next[colIndex] = fieldKey;
+      }
+      return next;
+    });
+  };
+
+  const mappedFieldKeys = new Set(Object.values(columnMapping));
+  const missingRequiredFields = IMPORT_FIELDS.filter(
+    (f) => f.required && !mappedFieldKeys.has(f.key)
+  );
+
+  const handleConfirmMapping = () => {
+    if (!rawMatrix || !pendingDefaults) return;
+    if (missingRequiredFields.length > 0) {
+      setErrorMsg(
+        `Zorunlu alanlar eşlenmeden devam edilemez: ${missingRequiredFields.map((f) => f.label).join(", ")}.`
+      );
+      return;
+    }
+    setErrorMsg(null);
+    const rows = buildRowsFromMapping(rawMatrix, columnMapping, pendingDefaults);
+    if (rows.length === 0) {
+      setErrorMsg("Bu eşlemeyle hiçbir geçerli satır üretilemedi. Lütfen kolon eşlemesini gözden geçirin.");
+      return;
+    }
+    saveMapping(headerRow, columnMapping);
+    setPreviewRows(rows);
+    setShowMappingStep(false);
+    setMappingNotice(null);
+  };
 
   // 1. Handle local Excel / CSV file upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -75,17 +202,16 @@ export function GoogleDriveXlsImportModal({
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: "array", cellDates: true });
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rawMatrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, {
+        const fileMatrix: any[][] = XLSX.utils.sheet_to_json(firstSheet, {
           header: 1,
           defval: "",
         });
 
-        const rows = parseMatrixToRows(rawMatrix);
-        if (rows.length === 0) {
+        if (!fileMatrix || fileMatrix.length < 2) {
           setErrorMsg("Excel dosyasında geçerli veri satırı bulunamadı. İlk satır başlık olmalıdır.");
-        } else {
-          setPreviewRows(rows);
+          return;
         }
+        beginMappingFlow(fileMatrix, { defaultStore: store, defaultProductTitle: "Excel Siparişi" });
       } catch (err: any) {
         setErrorMsg(`Dosya okuma hatası: ${err.message}`);
       }
@@ -105,11 +231,15 @@ export function GoogleDriveXlsImportModal({
         body: JSON.stringify({ driveUrl, defaultStore: store }),
       });
       const data = await res.json();
-      if (res.ok && data.rows) {
-        setPreviewRows(data.rows);
+      if (res.ok && Array.isArray(data.rawMatrix) && data.rawMatrix.length >= 2) {
         setFileName("Google Drive E-Tablo");
+        beginMappingFlow(data.rawMatrix, {
+          defaultStore: store,
+          defaultProductTitle: "Google Drive Ürünü",
+          defaultDriveLink: driveUrl,
+        });
       } else {
-        setErrorMsg(data.error || "Google Drive linki çözümlenemedi.");
+        setErrorMsg(data.error || "Google Drive linki çözümlenemedi veya tabloda satır bulunamadı.");
       }
     } catch {
       setErrorMsg("Bağlantı hatası oluştu.");
@@ -119,18 +249,42 @@ export function GoogleDriveXlsImportModal({
   };
 
   // 3. Parse pasted TSV / CSV text
+  //
+  // Yapıştırılan metnin ilk satırı gerçek bir başlık mı, yoksa doğrudan veri
+  // mi belli değildir (kullanıcı ikisini de yapabilir). Otomatik eşleme,
+  // ilk satırı aday başlık kabul edip en az 2 kolonu tanıyabiliyorsa gerçek
+  // başlık sayılır; tanıyamıyorsa tüm satırlar veri kabul edilir ve kolonlara
+  // "Kolon 1", "Kolon 2" gibi anonim adlar verilir — bu durumda otomatik
+  // eşleme boş kalır ve kullanıcı eşleme adımında manuel seçer.
   const handleParsePaste = () => {
     setErrorMsg(null);
     if (!tsvText.trim()) return;
     const lines = tsvText.trim().split("\n");
-    const matrix = lines.map((l) => (l.includes("\t") ? l.split("\t") : l.split(",")));
-    const rows = parseMatrixToRows([["HEADER", ...Array(39).fill("")], ...matrix]);
-    if (rows.length === 0) {
+    const dataRowsRaw = lines.map((l) => (l.includes("\t") ? l.split("\t") : l.split(",")));
+    if (dataRowsRaw.length === 0) {
       setErrorMsg("Yapıştırılan metinde geçerli satır bulunamadı.");
-    } else {
-      setPreviewRows(rows);
-      setFileName("Panodan Yapıştırılan Veri");
+      return;
     }
+
+    const candidateHeader = dataRowsRaw[0].map((c) => String(c ?? ""));
+    const guessedFromFirstRow = guessColumnMapping(candidateHeader);
+    const firstRowLooksLikeHeader = Object.keys(guessedFromFirstRow).length >= 2;
+
+    let matrix: any[][];
+    if (firstRowLooksLikeHeader) {
+      matrix = dataRowsRaw;
+    } else {
+      const colCount = Math.max(...dataRowsRaw.map((r) => r.length));
+      const anonymousHeader = Array.from({ length: colCount }, (_, i) => `Kolon ${i + 1}`);
+      matrix = [anonymousHeader, ...dataRowsRaw];
+    }
+
+    if (matrix.length < 2) {
+      setErrorMsg("Yapıştırılan metinde geçerli veri satırı bulunamadı.");
+      return;
+    }
+    setFileName("Panodan Yapıştırılan Veri");
+    beginMappingFlow(matrix, { defaultStore: store, defaultProductTitle: "Panodan Yapıştırılan Veri" });
   };
 
   // Update cell in preview table inline
@@ -359,17 +513,180 @@ export function GoogleDriveXlsImportModal({
           </div>
         )}
 
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {/* KOLON EŞLEME ADIMI — dosya/Drive/yapıştır standarttan farklı  */}
+        {/* sırada/adda kolonlara sahipse burada düzeltilir              */}
+        {/* ═══════════════════════════════════════════════════════════ */}
+        {showMappingStep && rawMatrix && (
+          <div className="space-y-3">
+            <div className="p-3 rounded-xl bg-info/10 border border-info/30 text-xs font-mono-tech text-ink-muted flex items-start gap-2">
+              <Info className="w-4 h-4 shrink-0 text-info mt-0.5" />
+              <span>
+                Başlıklar otomatik tanınmaya çalışıldı. Her kolon için doğru alanı seçin/onaylayın —
+                <strong className="text-ink"> ⚠ işareti</strong>, o kolondaki örnek değerlerin seçilen
+                alanın beklediği tiple (sayı/tarih/metin) uyuşmadığını gösterir. Onayladığınız eşleme bu
+                dosya formatı için hatırlanır, bir sonraki seferde otomatik uygulanır.
+              </span>
+            </div>
+
+            {missingRequiredFields.length > 0 && (
+              <div className="p-2.5 rounded-xl bg-danger/10 border border-danger/30 text-danger text-xs font-mono-tech">
+                Zorunlu alanlar henüz eşlenmedi: {missingRequiredFields.map((f) => f.label).join(", ")}
+              </div>
+            )}
+
+            <div className="border border-line rounded-xl overflow-hidden bg-surface-base max-h-80 overflow-y-auto">
+              <table className="w-full text-left text-xs font-mono-tech">
+                <thead className="bg-surface-1 text-ink-muted border-b border-line text-[11px] sticky top-0">
+                  <tr>
+                    <th className="p-2.5">#</th>
+                    <th className="p-2.5">Kaynak Kolon</th>
+                    <th className="p-2.5">Örnek Değerler</th>
+                    <th className="p-2.5">Eşlenecek Alan</th>
+                    <th className="p-2.5">Tip</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {headerRow.map((header, colIndex) => {
+                    const fieldKey = columnMapping[colIndex] ?? IGNORE_FIELD;
+                    const fieldDef = IMPORT_FIELDS.find((f) => f.key === fieldKey);
+                    const samples = dataRows
+                      .map((r) => r[colIndex])
+                      .filter((v) => v !== undefined && v !== null && String(v).trim() !== "")
+                      .slice(0, 3);
+                    const detected = detectColumnSampleType(dataRows.map((r) => r[colIndex]));
+                    const mismatch = fieldDef ? !isColumnTypeCompatible(fieldDef.type, detected) : false;
+
+                    return (
+                      <tr key={colIndex} className={mismatch ? "bg-caution/5" : undefined}>
+                        <td className="p-2 text-ink-faint">{colIndex + 1}</td>
+                        <td className="p-2 font-bold text-ink">{header || <span className="text-ink-faint italic">(boş başlık)</span>}</td>
+                        <td className="p-2 text-ink-muted max-w-[220px] truncate" title={samples.join(", ")}>
+                          {samples.length ? samples.join(", ") : <span className="text-ink-faint italic">örnek yok</span>}
+                        </td>
+                        <td className="p-2">
+                          <select
+                            value={fieldKey}
+                            onChange={(e) => handleMappingChange(colIndex, e.target.value)}
+                            className={`px-2 py-1.5 bg-surface-1 border rounded-lg text-xs min-w-[180px] ${
+                              mismatch ? "border-caution text-caution" : "border-line text-ink"
+                            }`}
+                          >
+                            <option value={IGNORE_FIELD}>— Yoksay —</option>
+                            <optgroup label="Zorunlu Alanlar">
+                              {IMPORT_FIELDS.filter((f) => f.required).map((f) => (
+                                <option key={f.key} value={f.key}>
+                                  {f.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Diğer Alanlar">
+                              {IMPORT_FIELDS.filter((f) => !f.required).map((f) => (
+                                <option key={f.key} value={f.key}>
+                                  {f.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          {fieldDef ? (
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1 w-fit ${
+                                mismatch
+                                  ? "bg-caution/15 text-caution border-caution/40"
+                                  : "bg-surface-2 text-ink-muted border-line"
+                              }`}
+                              title={
+                                mismatch
+                                  ? `Bu kolonun örnek değerleri "${detected}" görünüyor ama "${fieldDef.label}" alanı "${IMPORT_FIELD_TYPE_LABELS[fieldDef.type]}" bekliyor.`
+                                  : undefined
+                              }
+                            >
+                              {mismatch && <AlertTriangle className="w-3 h-3" />}
+                              {IMPORT_FIELD_TYPE_LABELS[fieldDef.type]}
+                            </span>
+                          ) : (
+                            <span className="text-ink-faint text-[10px]">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[11px] text-ink-faint font-mono-tech">
+                Kaynak: {fileName || "Dosya"} • {dataRows.length} veri satırı bulundu
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRawMatrix(null);
+                    setPendingDefaults(null);
+                    setColumnMapping({});
+                    setShowMappingStep(false);
+                    setFileName(null);
+                    setErrorMsg(null);
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-mono-tech text-ink-muted hover:text-ink transition"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmMapping}
+                  disabled={missingRequiredFields.length > 0}
+                  className="px-5 py-2.5 rounded-xl bg-brand hover:bg-brand-soft disabled:opacity-40 text-ink font-mono-tech text-xs uppercase font-bold tracking-wider transition flex items-center gap-2"
+                >
+                  <Columns3 className="w-4 h-4" />
+                  Eşlemeyi Onayla ve Devam Et
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mappingNotice && !showMappingStep && (
+          <div className="p-3 rounded-xl bg-info/10 border border-info/30 text-xs font-mono-tech text-ink-muted flex items-start gap-2">
+            <Info className="w-4 h-4 shrink-0 text-info mt-0.5" />
+            <span className="flex-1">{mappingNotice}</span>
+            <button
+              type="button"
+              onClick={() => setShowMappingStep(true)}
+              className="shrink-0 text-brand-soft hover:underline font-bold whitespace-nowrap"
+            >
+              Eşlemeyi Düzenle
+            </button>
+          </div>
+        )}
+
         {/* EXCEL BENZERİ HÜCRE DÜZENLEYİCİ ÖNİZLEME TABLOSU (SPREADSHEET PREVIEW & EDIT GRID) */}
-        {previewRows.length > 0 && (
+        {!showMappingStep && previewRows.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-mono-tech">
               <span className="text-positive font-bold flex items-center gap-1.5">
                 <Edit3 className="w-4 h-4" />
                 Önizleme &amp; Excel Tarzı Hücre Düzenleme ({previewRows.length} Satır Hazır)
               </span>
-              <span className="text-ink-muted text-[11px]">
-                Kaynak: {fileName || "Dosya"} • Hücrelere tıklayıp kaydetmeden önce düzeltebilirsiniz
-              </span>
+              <div className="flex items-center gap-3 text-[11px]">
+                {rawMatrix && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMappingStep(true)}
+                    className="text-brand-soft hover:underline font-bold flex items-center gap-1"
+                  >
+                    <Columns3 className="w-3.5 h-3.5" />
+                    Eşlemeyi Düzenle
+                  </button>
+                )}
+                <span className="text-ink-muted">
+                  Kaynak: {fileName || "Dosya"} • Hücrelere tıklayıp kaydetmeden önce düzeltebilirsiniz
+                </span>
+              </div>
             </div>
 
             <div className="border border-line rounded-xl overflow-hidden bg-surface-base max-h-64 overflow-y-auto">
@@ -479,32 +796,34 @@ export function GoogleDriveXlsImportModal({
           </div>
         )}
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between pt-3 border-t border-line">
-          <span className="text-xs text-ink-faint font-mono-tech">
-            {previewRows.length > 0
-              ? `${previewRows.length} satır veritabanına kaydedilmeye hazır`
-              : "Lütfen bir dosya yükleyin veya Google Drive linki girin"}
-          </span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-mono-tech text-ink-muted hover:text-ink transition"
-            >
-              Vazgeç
-            </button>
-            <button
-              onClick={handleCommitToDatabase}
-              disabled={importing || previewRows.length === 0}
-              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-surface-base font-mono-tech text-xs uppercase font-bold tracking-wider transition flex items-center gap-2 shadow-lg shadow-emerald-500/20"
-            >
-              <Upload className="w-4 h-4" />
-              {importing
-                ? "Veritabanına Aktarılıyor..."
-                : `${previewRows.length} Siparişi Veritabanına Aktar`}
-            </button>
+        {/* Footer Actions — kolon eşleme adımı açıkken gizli (o adımın kendi Vazgeç/Onayla düğmeleri var) */}
+        {!showMappingStep && (
+          <div className="flex items-center justify-between pt-3 border-t border-line">
+            <span className="text-xs text-ink-faint font-mono-tech">
+              {previewRows.length > 0
+                ? `${previewRows.length} satır veritabanına kaydedilmeye hazır`
+                : "Lütfen bir dosya yükleyin veya Google Drive linki girin"}
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl text-xs font-mono-tech text-ink-muted hover:text-ink transition"
+              >
+                Vazgeç
+              </button>
+              <button
+                onClick={handleCommitToDatabase}
+                disabled={importing || previewRows.length === 0}
+                className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-surface-base font-mono-tech text-xs uppercase font-bold tracking-wider transition flex items-center gap-2 shadow-lg shadow-emerald-500/20"
+              >
+                <Upload className="w-4 h-4" />
+                {importing
+                  ? "Veritabanına Aktarılıyor..."
+                  : `${previewRows.length} Siparişi Veritabanına Aktar`}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

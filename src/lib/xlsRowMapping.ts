@@ -12,6 +12,11 @@
  * engeller.
  */
 import { excelCellToDateStr } from "@/lib/excelDate";
+import {
+  IMPORT_FIELDS,
+  normalizeHeaderLabel,
+  type ImportFieldDef,
+} from "@/lib/importFieldSchema";
 
 export interface XlsRowDefaults {
   /** Kolon 0 (Satın Alan) boşsa kullanılacak mağaza kodu */
@@ -88,6 +93,165 @@ export function parseXlsMatrix(
   const parsed: Record<string, unknown>[] = [];
   for (const cols of dataRows) {
     const row = parseXlsMatrixRow(cols as unknown[], defaults);
+    if (row) parsed.push(row);
+  }
+  return parsed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * KOLON EŞLEME (COLUMN MAPPING) — kullanıcı isteği: "bazı xls ya da
+ * drive'larda [kolon düzeni] farklı olabilir, sisteme atarken kolonları
+ * eşleştirme yaparak atmamızı sağlayalım ve tip kontrolü yaparak
+ * yanlışları giderelim."
+ *
+ * Yukarıdaki `parseXlsMatrixRow`/`parseXlsMatrix` KASITLI OLARAK
+ * değiştirilmedi (geriye dönük uyumluluk + mevcut testler). Bu bölüm,
+ * dosyanın başlık satırını gerçekten OKUYAN, alan kimliğine göre eşleyen
+ * (pozisyona göre değil) ek/yeni bir motor sağlar. Kilitli 40-kolon
+ * formatındaki bir dosya için otomatik eşleme, pozisyonel sonuçla birebir
+ * aynı satırları üretir (aynı katalog + aynı varsayılanlar) — farklı
+ * kolon sırası/adı olan bir dosya için ise doğru alanlara doğru veri gider.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/** colIndex → hedef alan anahtarı (ör. 5 → "asin"). Eşlenmemiş kolonlar haritada yer almaz. */
+export type ColumnMapping = Record<number, string>;
+
+/**
+ * Başlık satırından otomatik eşleme önerisi üretir. Üç aşamalı, artan
+ * esneklikte dener — kısa/genel bir eşanlamlının (ör. "p1") yanlış bir
+ * başlıkla erken eşleşip doğru adayı gölgelememesi için:
+ *   1) kanonik başlıkla TAM eşleşme (tüm kolon/alan çiftleri)
+ *   2) bilinen eşanlamlıyla TAM eşleşme
+ *   3) alt-dize (contains) eşleşmesi — yalnızca 3+ karakterlik adaylar
+ * Her alan yalnızca bir kolona, her kolon yalnızca bir alana eşlenir.
+ */
+export function guessColumnMapping(
+  headerRow: unknown[],
+  fields: ImportFieldDef[] = IMPORT_FIELDS
+): ColumnMapping {
+  const normalizedHeaders = headerRow.map((h) => normalizeHeaderLabel(h));
+  const mapping: ColumnMapping = {};
+  const usedFields = new Set<string>();
+  const usedCols = new Set<number>();
+
+  const tryPass = (getCandidates: (f: ImportFieldDef) => string[], allowShort: boolean) => {
+    normalizedHeaders.forEach((norm, colIndex) => {
+      if (usedCols.has(colIndex) || !norm) return;
+      for (const field of fields) {
+        if (usedFields.has(field.key)) continue;
+        const candidates = getCandidates(field).filter((c) => allowShort || c.length >= 3);
+        const matched = allowShort
+          ? candidates.includes(norm)
+          : candidates.some((c) => norm === c || norm.includes(c) || c.includes(norm));
+        if (matched) {
+          mapping[colIndex] = field.key;
+          usedFields.add(field.key);
+          usedCols.add(colIndex);
+          return;
+        }
+      }
+    });
+  };
+
+  // 1) kanonik başlıkla tam eşleşme
+  tryPass((f) => [normalizeHeaderLabel(f.label)], true);
+  // 2) bilinen eşanlamlıyla tam eşleşme
+  tryPass((f) => f.aliases.map(normalizeHeaderLabel), true);
+  // 3) alt-dize eşleşmesi (yalnızca 3+ karakter — "p1" gibi kısa adaylar hariç)
+  tryPass((f) => [normalizeHeaderLabel(f.label), ...f.aliases.map(normalizeHeaderLabel)], false);
+
+  return mapping;
+}
+
+/** mapping'te verilen field'a atanan kolonun ham değerini döner (yoksa undefined). */
+function readMappedValue(cols: unknown[], mapping: ColumnMapping, fieldKey: string): unknown {
+  for (const [idxStr, key] of Object.entries(mapping)) {
+    if (key === fieldKey) return cols[Number(idxStr)];
+  }
+  return undefined;
+}
+
+/**
+ * Eşlemeye göre tek bir veri satırını nesneye çevirir. `parseXlsMatrixRow`
+ * ile aynı alan adlarını ve aynı tip/varsayılan davranışını üretir — tek
+ * fark, hangi kolonun hangi alana karşılık geldiğinin artık HARİTADAN
+ * (kullanıcı onaylı veya otomatik tahmin) gelmesi, sabit pozisyondan değil.
+ */
+export function buildRowFromMapping(
+  cols: unknown[],
+  mapping: ColumnMapping,
+  defaults: XlsRowDefaults
+): Record<string, unknown> | null {
+  if (!cols || cols.length === 0) return null;
+
+  const get = (key: string) => readMappedValue(cols, mapping, key);
+
+  const productTitleRaw = String(get("productTitle") ?? "").trim();
+  const orderNumberRaw = String(get("orderNumber") ?? "").trim();
+  if (!productTitleRaw && !orderNumberRaw) return null;
+
+  const result: Record<string, unknown> = {};
+  for (const field of IMPORT_FIELDS) {
+    const raw = get(field.key);
+    switch (field.key) {
+      case "buyerStore":
+        result.buyerStore = String(raw ?? defaults.defaultStore).trim() || defaults.defaultStore;
+        continue;
+      case "orderDate":
+        result.orderDate = excelCellToDateStr(raw) || new Date().toISOString().split("T")[0];
+        continue;
+      case "productTitle":
+        result.productTitle = productTitleRaw || defaults.defaultProductTitle;
+        continue;
+      case "asin":
+        result.asin = String(raw ?? "").trim().toUpperCase();
+        continue;
+      case "orderNumber":
+        result.orderNumber =
+          orderNumberRaw || `WO-${Math.floor(10000000 + Math.random() * 90000000)}`;
+        continue;
+      case "driveLink":
+        result.driveLink = String(raw || defaults.defaultDriveLink || "").trim();
+        continue;
+      case "correctedCost": {
+        const totalCostVal = result.totalCost as string | undefined;
+        result.correctedCost = String(raw || totalCostVal || "0").replace(",", ".");
+        continue;
+      }
+    }
+
+    switch (field.type) {
+      case "count": {
+        const fallback = (field.staticDefault as number | null | undefined) ?? null;
+        result[field.key] = Number(raw) || fallback;
+        break;
+      }
+      case "money": {
+        const fallback = (field.staticDefault as string | undefined) || "0";
+        result[field.key] = String(raw || fallback).replace(",", ".");
+        break;
+      }
+      default: {
+        const fallback = (field.staticDefault as string | undefined) || "";
+        result[field.key] = String(raw || fallback).trim();
+      }
+    }
+  }
+
+  return result;
+}
+
+/** Ham 2D matrisi (ilk satır başlık), verilen kolon eşlemesine göre satır nesnelerine çevirir. */
+export function buildRowsFromMapping(
+  rawMatrix: unknown[][],
+  mapping: ColumnMapping,
+  defaults: XlsRowDefaults
+): Record<string, unknown>[] {
+  if (!rawMatrix || rawMatrix.length < 2) return [];
+  const dataRows = rawMatrix.slice(1);
+  const parsed: Record<string, unknown>[] = [];
+  for (const cols of dataRows) {
+    const row = buildRowFromMapping(cols as unknown[], mapping, defaults);
     if (row) parsed.push(row);
   }
   return parsed;
